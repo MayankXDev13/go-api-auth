@@ -1,0 +1,40 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+go-api-auth
+api
+
+# Go build cache / test cache
+*.test
+*.out
+coverage.out
+coverage.html
+/vendor/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker / PG data
+postgres-data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+/tmp/

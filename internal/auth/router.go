@@ -1,0 +1,310 @@
+package auth
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+)
+
+type Handler struct {
+	db *gorm.DB
+}
+
+func NewRouter(db *gorm.DB) http.Handler {
+	h := &Handler{db: db}
+	r := chi.NewRouter()
+	r.Post("/api/v1/auth/register", h.register)
+	r.Post("/api/v1/auth/login", h.login)
+	r.Post("/api/v1/auth/refresh", h.refresh)
+	r.Post("/api/v1/auth/logout", h.logout)
+	r.Post("/api/v1/auth/forgot-password", h.forgotPassword)
+	r.Post("/api/v1/auth/reset-password", h.resetPassword)
+	r.With(RequireAuth).Get("/api/v1/auth/me", h.me)
+	r.With(RequireAuth).Put("/api/v1/auth/change-password", h.changePassword)
+	return r
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+type registerInput struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
+	var in registerInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+	if in.Name == "" || in.Email == "" || len(in.Password) < 8 {
+		writeErr(w, http.StatusBadRequest, "name, valid email and password >=8 chars required")
+		return
+	}
+	if !strings.Contains(in.Email, "@") {
+		writeErr(w, http.StatusBadRequest, "invalid email")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+
+	u := User{Name: in.Name, Email: in.Email, PasswordHash: string(hash)}
+	if err := h.db.Create(&u).Error; err != nil {
+		writeErr(w, http.StatusConflict, "email already exists")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": u.ID.String(), "name": u.Name, "email": u.Email, "created_at": u.CreatedAt,
+	})
+}
+
+type loginInput struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	var in loginInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	if email == "" || in.Password == "" {
+		writeErr(w, http.StatusBadRequest, "email and password required")
+		return
+	}
+	var u User
+	if err := h.db.Where("email = ?", email).First(&u).Error; err != nil {
+		writeErr(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.Password)); err != nil {
+		writeErr(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+
+	access, err := NewAccessToken(u.ID, AccessTTL())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	raw, hash, err := NewOpaqueToken()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	rt := RefreshToken{UserID: u.ID, TokenHash: hash, ExpiresAt: time.Now().Add(RefreshTTL())}
+	if err := h.db.Create(&rt).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name: "refresh_token", Value: raw, Path: "/",
+		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		Expires: time.Now().Add(RefreshTTL()),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": access, "token_type": "Bearer",
+		"refresh_token": raw,
+		"user":          map[string]any{"id": u.ID.String(), "name": u.Name, "email": u.Email},
+	})
+}
+
+func refreshTokenFromRequest(r *http.Request) string {
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.RefreshToken != "" {
+		return body.RefreshToken
+	}
+	if c, err := r.Cookie("refresh_token"); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
+func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
+	raw := refreshTokenFromRequest(r)
+	if raw == "" {
+		writeErr(w, http.StatusUnauthorized, "missing refresh token")
+		return
+	}
+	var rt RefreshToken
+	if err := h.db.Where("token_hash = ?", HashOpaque(raw)).First(&rt).Error; err != nil {
+		writeErr(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+	if rt.RevokedAt != nil || time.Now().After(rt.ExpiresAt) {
+		writeErr(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	now := time.Now()
+	rt.RevokedAt = &now
+	_ = h.db.Save(&rt).Error
+
+	access, err := NewAccessToken(rt.UserID, AccessTTL())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	newRaw, newHash, err := NewOpaqueToken()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	if err := h.db.Create(&RefreshToken{UserID: rt.UserID, TokenHash: newHash, ExpiresAt: time.Now().Add(RefreshTTL())}).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: "refresh_token", Value: newRaw, Path: "/",
+		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		Expires: time.Now().Add(RefreshTTL()),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": access, "token_type": "Bearer", "refresh_token": newRaw,
+	})
+}
+
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	raw := refreshTokenFromRequest(r)
+	if raw == "" {
+		writeErr(w, http.StatusBadRequest, "missing refresh token")
+		return
+	}
+	now := time.Now()
+	_ = h.db.Model(&RefreshToken{}).Where("token_hash = ?", HashOpaque(raw)).Update("revoked_at", now).Error
+	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
+}
+
+func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
+	id, ok := UserIDFromContext(r.Context())
+	if !ok {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var u User
+	if err := h.db.Where("id = ?", id).First(&u).Error; err != nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": u.ID.String(), "name": u.Name, "email": u.Email, "created_at": u.CreatedAt,
+	})
+}
+
+type changePasswordInput struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
+	id, ok := UserIDFromContext(r.Context())
+	if !ok {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var in changePasswordInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if len(in.NewPassword) < 8 {
+		writeErr(w, http.StatusBadRequest, "new password must be >=8 chars")
+		return
+	}
+	var u User
+	if err := h.db.Where("id = ?", id).First(&u).Error; err != nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.CurrentPassword)); err != nil {
+		writeErr(w, http.StatusUnauthorized, "current password incorrect")
+		return
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+	_ = h.db.Model(&u).Update("password_hash", string(hash)).Error
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password changed"})
+}
+
+type forgotInput struct {
+	Email string `json:"email"`
+}
+
+func (h *Handler) forgotPassword(w http.ResponseWriter, r *http.Request) {
+	var in forgotInput
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	// Always 200 to avoid user enumeration.
+	var u User
+	if err := h.db.Where("email = ?", email).First(&u).Error; err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
+		return
+	}
+	raw, err := IssueResetToken(h.db, u.ID)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
+		return
+	}
+	_ = raw // in prod, email raw token link here via mailer
+	writeJSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
+}
+
+type resetInput struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+
+func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
+	var in resetInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Token == "" {
+		writeErr(w, http.StatusBadRequest, "token and new password required")
+		return
+	}
+	if len(in.NewPassword) < 8 {
+		writeErr(w, http.StatusBadRequest, "new password must be >=8 chars")
+		return
+	}
+	var prt PasswordResetToken
+	if err := h.db.Where("token_hash = ?", HashOpaque(in.Token)).First(&prt).Error; err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid or expired token")
+		return
+	}
+	if prt.UsedAt != nil || time.Now().After(prt.ExpiresAt) {
+		writeErr(w, http.StatusBadRequest, "invalid or expired token")
+		return
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+	_ = h.db.Model(&User{}).Where("id = ?", prt.UserID).Update("password_hash", string(hash)).Error
+	now := time.Now()
+	_ = h.db.Model(&prt).Update("used_at", now).Error
+	// Revoke all refresh tokens on reset.
+	_ = h.db.Model(&RefreshToken{}).Where("user_id = ? AND revoked_at IS NULL", prt.UserID).Update("revoked_at", now).Error
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password reset"})
+}
