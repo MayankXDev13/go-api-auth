@@ -6,8 +6,8 @@
 *.dylib
 /bin/
 /dist/
-go-api-auth
-api
+/go-api-auth
+/api
 
 # Go build cache / test cache
 *.test
