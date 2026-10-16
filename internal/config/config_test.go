@@ -87,6 +87,8 @@ func TestLoad_InvalidValues(t *testing.T) {
 }
 
 func TestLoad_DotEnvLoadedButRealEnvWins(t *testing.T) {
+	unsetenv(t, "JWT_SECRET")
+
 	dir := t.TempDir()
 	dotenv := "JWT_SECRET=" + goodSecret + "\nBCRYPT_COST=5\n"
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(dotenv), 0o600); err != nil {
@@ -105,4 +107,19 @@ func TestLoad_DotEnvLoadedButRealEnvWins(t *testing.T) {
 	if c.JWTSecret != strings.TrimSpace(goodSecret) {
 		t.Fatalf("secret should load from .env, got %q", c.JWTSecret)
 	}
+}
+
+// unsetenv removes a variable for the test and restores it afterwards, so
+// tests are not affected by a value exported in the surrounding environment.
+func unsetenv(t *testing.T, key string) {
+	t.Helper()
+	old, ok := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(key, old)
+		}
+	})
 }
