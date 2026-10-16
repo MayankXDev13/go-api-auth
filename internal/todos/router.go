@@ -10,6 +10,7 @@ import (
 
 	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/csrf"
 	"go-api-auth/internal/httpx"
 
 	"github.com/go-chi/chi/v5"
@@ -35,6 +36,7 @@ func Register(r chi.Router, db *gorm.DB, cfg config.Config, log *slog.Logger) {
 	h := &Handler{db: db, log: log}
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireAuth(db, []byte(cfg.JWTSecret)))
+		r.Use(csrf.Middleware)
 		r.Post("/api/v1/todos", h.create)
 		r.Get("/api/v1/todos", h.list)
 		r.Get("/api/v1/todos/{id}", h.get)

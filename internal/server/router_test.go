@@ -295,3 +295,25 @@ func TestRefresh_CookieAuthRequiresCSRF(t *testing.T) {
 		t.Fatalf("refresh with valid CSRF should 200, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Public endpoints are not cookie-authenticated, so stale session cookies must
+// not make them demand a CSRF token.
+func TestCSRF_PublicRoutesIgnoreStaleCookies(t *testing.T) {
+	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
+	_, cookies := loginAs(t, h, "stale@example.com")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/register",
+		map[string]string{"name": "New", "email": "new@example.com", "password": "Secret123!"},
+		cookies, nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register with stale cookies should 201, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/login",
+		map[string]string{"email": "stale@example.com", "password": "Secret123!"}, cookies, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login with stale cookies should 200, got %d %s", rec.Code, rec.Body.String())
+	}
+}

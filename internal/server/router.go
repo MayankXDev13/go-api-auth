@@ -10,7 +10,6 @@ import (
 	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
 	"go-api-auth/internal/cors"
-	"go-api-auth/internal/csrf"
 	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/todos"
 
@@ -47,7 +46,6 @@ func newBaseRouter(log *slog.Logger) *chi.Mux {
 	r.Use(middleware.RealIP)
 	r.Use(requestLogger(log))
 	r.Use(recoverer(log))
-	r.Use(csrf.Middleware)
 	r.Use(middleware.Timeout(60 * time.Second))
 	return r
 }

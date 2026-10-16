@@ -46,13 +46,13 @@ func Register(r chi.Router, db *gorm.DB, cfg config.Config, mail mailer.Mailer, 
 		}
 		r.Post("/api/v1/auth/register", h.register)
 		r.Post("/api/v1/auth/login", h.login)
-		r.Post("/api/v1/auth/refresh", h.refresh)
-		r.Post("/api/v1/auth/logout", h.logout)
+		r.With(csrf.Middleware).Post("/api/v1/auth/refresh", h.refresh)
+		r.With(csrf.Middleware).Post("/api/v1/auth/logout", h.logout)
 		r.Post("/api/v1/auth/forgot-password", h.forgotPassword)
 		r.Post("/api/v1/auth/reset-password", h.resetPassword)
-		r.With(requireAuth).Get("/api/v1/auth/me", h.me)
-		r.With(requireAuth).Put("/api/v1/auth/change-password", h.changePassword)
-		r.With(requireAuth).Post("/api/v1/auth/logout-all", h.logoutAll)
+		r.With(requireAuth, csrf.Middleware).Get("/api/v1/auth/me", h.me)
+		r.With(requireAuth, csrf.Middleware).Put("/api/v1/auth/change-password", h.changePassword)
+		r.With(requireAuth, csrf.Middleware).Post("/api/v1/auth/logout-all", h.logoutAll)
 	})
 }
 
