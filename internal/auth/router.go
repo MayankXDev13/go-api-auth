@@ -72,6 +72,10 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "name, valid email and password >=8 chars required")
 		return
 	}
+	if len(in.Password) > maxPasswordBytes {
+		httpx.Error(w, http.StatusBadRequest, "password must be at most 72 bytes")
+		return
+	}
 	if !strings.Contains(in.Email, "@") {
 		httpx.Error(w, http.StatusBadRequest, "invalid email")
 		return
@@ -141,16 +145,34 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name: "refresh_token", Value: raw, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		Expires: time.Now().Add(h.cfg.RefreshTTL),
-	})
+	http.SetCookie(w, h.refreshCookie(raw, time.Now().Add(h.cfg.RefreshTTL)))
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"access_token": access, "token_type": "Bearer",
 		"refresh_token": raw,
 		"user":          map[string]any{"id": u.ID.String(), "name": u.Name, "email": u.Email},
 	})
+}
+
+// maxPasswordBytes is bcrypt's input limit; longer inputs are truncated by
+// some implementations, so they are rejected instead.
+const maxPasswordBytes = 72
+
+func (h *Handler) refreshCookie(value string, expires time.Time) *http.Cookie {
+	return &http.Cookie{
+		Name:     "refresh_token",
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   h.cfg.IsProduction(),
+		Expires:  expires,
+	}
+}
+
+func (h *Handler) clearRefreshCookie(w http.ResponseWriter) {
+	c := h.refreshCookie("", time.Unix(0, 0))
+	c.MaxAge = -1
+	http.SetCookie(w, c)
 }
 
 func refreshTokenFromRequest(r *http.Request) string {
@@ -220,11 +242,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: "refresh_token", Value: newRaw, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		Expires: time.Now().Add(h.cfg.RefreshTTL),
-	})
+	http.SetCookie(w, h.refreshCookie(newRaw, time.Now().Add(h.cfg.RefreshTTL)))
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"access_token": access, "token_type": "Bearer", "refresh_token": newRaw,
 	})
@@ -242,7 +260,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	h.clearRefreshCookie(w)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
@@ -280,6 +298,10 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(in.NewPassword) < 8 {
 		httpx.Error(w, http.StatusBadRequest, "new password must be >=8 chars")
+		return
+	}
+	if len(in.NewPassword) > maxPasswordBytes {
+		httpx.Error(w, http.StatusBadRequest, "password must be at most 72 bytes")
 		return
 	}
 	var u User
@@ -354,6 +376,10 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "new password must be >=8 chars")
 		return
 	}
+	if len(in.NewPassword) > maxPasswordBytes {
+		httpx.Error(w, http.StatusBadRequest, "password must be at most 72 bytes")
+		return
+	}
 	var prt PasswordResetToken
 	if err := h.db.Where("token_hash = ?", HashOpaque(in.Token)).First(&prt).Error; err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid or expired token")
@@ -414,6 +440,6 @@ func (h *Handler) logoutAll(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	h.clearRefreshCookie(w)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "logged out everywhere"})
 }

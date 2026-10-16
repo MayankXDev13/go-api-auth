@@ -374,6 +374,66 @@ func TestRateLimit_Returns429(t *testing.T) {
 	}
 }
 
+func TestPasswordTooLong_Rejected(t *testing.T) {
+	db := setupTestDB(t)
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	long := strings.Repeat("a", 73)
+
+	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/register",
+		map[string]string{"name": "Ada", "email": "long@example.com", "password": long}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-long register password should 400, got %d", rec.Code)
+	}
+
+	registerUser(t, r, "Ada", "len@example.com", "Secret123!")
+	access, _ := loginUser(t, r, "len@example.com", "Secret123!")
+	rec = doReq(t, r, http.MethodPut, "/api/v1/auth/change-password",
+		map[string]string{"current_password": "Secret123!", "new_password": long},
+		map[string]string{"Authorization": "Bearer " + access})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-long change password should 400, got %d", rec.Code)
+	}
+}
+
+func TestRefreshCookie_SecureFollowsEnv(t *testing.T) {
+	db := setupTestDB(t)
+
+	dev := testCfg()
+	dev.AppEnv = "development"
+	rDev := auth.NewRouter(db, dev, &recordingMailer{})
+	registerUser(t, rDev, "Ada", "dev@example.com", "Secret123!")
+	rec := doReq(t, rDev, http.MethodPost, "/api/v1/auth/login",
+		map[string]string{"email": "dev@example.com", "password": "Secret123!"}, nil)
+	if c := refreshCookie(t, rec); c.Secure {
+		t.Fatal("development cookie must not be Secure")
+	}
+
+	prod := testCfg()
+	prod.AppEnv = "production"
+	rProd := auth.NewRouter(db, prod, &recordingMailer{})
+	registerUser(t, rProd, "Ada", "prod@example.com", "Secret123!")
+	rec = doReq(t, rProd, http.MethodPost, "/api/v1/auth/login",
+		map[string]string{"email": "prod@example.com", "password": "Secret123!"}, nil)
+	c := refreshCookie(t, rec)
+	if !c.Secure {
+		t.Fatal("production cookie must be Secure")
+	}
+	if !c.HttpOnly {
+		t.Fatal("cookie must be HttpOnly")
+	}
+}
+
+func refreshCookie(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "refresh_token" {
+			return c
+		}
+	}
+	t.Fatal("no refresh_token cookie set")
+	return nil
+}
+
 func TestForgotReset_Flow(t *testing.T) {
 	db := setupTestDB(t)
 	mail := &recordingMailer{}

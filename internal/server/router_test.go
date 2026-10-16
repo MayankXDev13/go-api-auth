@@ -82,3 +82,37 @@ func TestComposedRouter_AuthProtectedRoutes(t *testing.T) {
 		t.Fatalf("auth/me should require auth (401), got %d", rec.Code)
 	}
 }
+
+func TestCORS(t *testing.T) {
+	cfg := testCfg()
+	cfg.CORSOrigins = []string{"https://app.example.com"}
+	r := NewRouter(newTestDB(t), cfg, mailer.Console{})
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Fatalf("allowed origin header = %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("disallowed origin must not get CORS header, got %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodOptions, "/api/v1/todos", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("preflight should 204, got %d", rec.Code)
+	}
+	if rec.Header().Get("Access-Control-Allow-Methods") == "" {
+		t.Fatal("preflight missing allowed methods")
+	}
+}
