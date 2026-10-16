@@ -5,10 +5,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"go-api-auth/internal/auth"
+	"go-api-auth/internal/todos"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
+func newTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&auth.User{}, &auth.RefreshToken{}, &auth.PasswordResetToken{}, &todos.Todo{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, _ := db.DB()
+		_ = sqlDB.Close()
+	})
+	return db
+}
+
 func TestHealthz(t *testing.T) {
-	r := NewRouter()
+	r := NewRouter(newTestDB(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -25,5 +47,23 @@ func TestHealthz(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Fatalf("expected status=ok, got %v", body)
+	}
+}
+
+// The whole point of the fix: auth and todos live on one root router
+// without a Mount("/") panic, and both are reachable.
+func TestComposedRouter_ReachesAuthAndTodos(t *testing.T) {
+	r := NewRouter(newTestDB(t))
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", nil))
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("auth route not mounted, got 404")
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/todos", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("todos route should require auth (401), got %d", rec.Code)
 	}
 }
