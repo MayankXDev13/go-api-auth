@@ -17,14 +17,31 @@ import (
 	"gorm.io/gorm"
 )
 
-// Open returns a *gorm.DB for the configured database. A postgres URL uses
-// the Postgres driver; anything else falls back to a local sqlite file for
-// development.
+// Open returns a *gorm.DB for the configured database with connection pool
+// limits applied. A postgres URL uses the Postgres driver; anything else
+// falls back to a local sqlite file for development.
 func Open(cfg config.Config) (*gorm.DB, error) {
+	var dialector gorm.Dialector
 	if isPostgres(cfg.DatabaseURL) {
-		return gorm.Open(postgres.Open(cfg.DatabaseURL), &gorm.Config{TranslateError: true})
+		dialector = postgres.Open(cfg.DatabaseURL)
+	} else {
+		dialector = sqlite.Open("app.db")
 	}
-	return gorm.Open(sqlite.Open("app.db"), &gorm.Config{TranslateError: true})
+
+	db, err := gorm.Open(dialector, &gorm.Config{TranslateError: true})
+	if err != nil {
+		return nil, err
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxOpenConns(cfg.DB.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.DB.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.DB.ConnMaxLifetime)
+
+	return db, nil
 }
 
 // Migrate applies all pending up migrations. It is a no-op when there is

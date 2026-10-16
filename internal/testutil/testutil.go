@@ -60,6 +60,18 @@ func Main(m *testing.M) {
 	os.Exit(code)
 }
 
+// AdminDSN returns the URL used to create throwaway test databases, loading
+// .env on first use. Handy for tests that need a live connection but not a
+// migrated schema.
+func AdminDSN(t *testing.T) string {
+	t.Helper()
+	once.Do(setup)
+	if setupErr != nil {
+		t.Fatalf("test postgres: %v", setupErr)
+	}
+	return adminDSN
+}
+
 func setup() {
 	loadDotEnv()
 

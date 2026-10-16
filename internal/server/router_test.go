@@ -116,3 +116,26 @@ func TestCORS(t *testing.T) {
 		t.Fatal("preflight missing allowed methods")
 	}
 }
+
+func TestMiddleware_RequestIDAndRecover(t *testing.T) {
+	r := newBaseRouter()
+	r.Get("/boom", func(http.ResponseWriter, *http.Request) { panic("boom") })
+	r.Get("/ok", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	req.Header.Set("X-Request-Id", "req-123")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic should be recovered as 500, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Request-Id"); got != "req-123" {
+		t.Fatalf("request id should be echoed, got %q", got)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ok", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("server should stay up after a panic, got %d", rec.Code)
+	}
+}
