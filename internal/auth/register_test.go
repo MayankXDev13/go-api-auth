@@ -9,10 +9,14 @@ import (
 
 	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/testutil"
 
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestMain(m *testing.M) {
+	testutil.Main(m)
+}
 
 func testCfg() config.Config {
 	c := config.Default()
@@ -22,25 +26,7 @@ func testCfg() config.Config {
 
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	// TDD loop uses sqlite in-memory for speed (no Docker here).
-	// Prod uses Postgres via same *gorm.DB / Store interface —
-	// models are PG-compatible (uuid, citext handled in PG migration).
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{TranslateError: true})
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	if err := db.AutoMigrate(&auth.User{}, &auth.RefreshToken{}, &auth.PasswordResetToken{}); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, _ := db.DB()
-		_ = sqlDB.Close()
-	})
-	// clean tables between tests (shared in-memory cache)
-	db.Exec("DELETE FROM password_reset_tokens")
-	db.Exec("DELETE FROM refresh_tokens")
-	db.Exec("DELETE FROM users")
-	return db
+	return testutil.PostgresDB(t)
 }
 
 // First behavior — valid register returns 201 with public user fields.

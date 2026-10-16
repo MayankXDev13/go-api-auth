@@ -6,13 +6,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
-	"go-api-auth/internal/todos"
+	"go-api-auth/internal/testutil"
 
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestMain(m *testing.M) {
+	testutil.Main(m)
+}
 
 func testCfg() config.Config {
 	c := config.Default()
@@ -22,18 +24,7 @@ func testCfg() config.Config {
 
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{TranslateError: true})
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	if err := db.AutoMigrate(&auth.User{}, &auth.RefreshToken{}, &auth.PasswordResetToken{}, &todos.Todo{}); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, _ := db.DB()
-		_ = sqlDB.Close()
-	})
-	return db
+	return testutil.PostgresDB(t)
 }
 
 func TestHealthz(t *testing.T) {

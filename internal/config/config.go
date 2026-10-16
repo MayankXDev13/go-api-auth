@@ -130,6 +130,14 @@ func Load() (Config, error) {
 	return c, nil
 }
 
+// DatabaseURLFromEnv loads a .env file if present and returns DATABASE_URL
+// without requiring the rest of the configuration to be valid. Intended for
+// the standalone migrate command.
+func DatabaseURLFromEnv() string {
+	_ = godotenv.Load()
+	return os.Getenv("DATABASE_URL")
+}
+
 // Validate fails fast on missing or out-of-range required values.
 func (c Config) Validate() error {
 	var errs []error

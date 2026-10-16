@@ -9,12 +9,16 @@ import (
 
 	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/testutil"
 	"go-api-auth/internal/todos"
 
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestMain(m *testing.M) {
+	testutil.Main(m)
+}
 
 func testCfg() config.Config {
 	c := config.Default()
@@ -24,22 +28,7 @@ func testCfg() config.Config {
 
 func setupDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{TranslateError: true})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if err := db.AutoMigrate(&auth.User{}, &auth.RefreshToken{}, &auth.PasswordResetToken{}, &todos.Todo{}); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	db.Exec("DELETE FROM todos")
-	db.Exec("DELETE FROM password_reset_tokens")
-	db.Exec("DELETE FROM refresh_tokens")
-	db.Exec("DELETE FROM users")
-	t.Cleanup(func() {
-		sqlDB, _ := db.DB()
-		_ = sqlDB.Close()
-	})
-	return db
+	return testutil.PostgresDB(t)
 }
 
 func makeUser(t *testing.T, db *gorm.DB, name, email string) (string, string) {
