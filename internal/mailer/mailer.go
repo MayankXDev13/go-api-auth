@@ -5,7 +5,7 @@ package mailer
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/smtp"
 	"strings"
@@ -27,9 +27,9 @@ type Mailer interface {
 
 // New returns an SMTP mailer when SMTP_HOST is configured, otherwise a
 // console mailer that logs the message.
-func New(cfg config.Config) Mailer {
+func New(cfg config.Config, log *slog.Logger) Mailer {
 	if cfg.SMTP.Host == "" {
-		return Console{}
+		return Console{Log: log}
 	}
 	return SMTP{
 		Host: cfg.SMTP.Host,
@@ -41,12 +41,19 @@ func New(cfg config.Config) Mailer {
 }
 
 // Console logs messages instead of sending them. It is the default when no
-// SMTP host is configured, and is used by tests.
-type Console struct{}
+// SMTP host is configured, and is used by tests. A nil Log falls back to the
+// default logger.
+type Console struct {
+	Log *slog.Logger
+}
 
 // Send logs the recipient, subject and body (including any reset link).
-func (Console) Send(_ context.Context, msg Message) error {
-	log.Printf("mailer: to=%s subject=%q body=%s", msg.To, msg.Subject, msg.Body)
+func (c Console) Send(_ context.Context, msg Message) error {
+	log := c.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Info("mailer console", "to", msg.To, "subject", msg.Subject, "body", msg.Body)
 	return nil
 }
 

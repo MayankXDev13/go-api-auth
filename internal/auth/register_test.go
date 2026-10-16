@@ -10,6 +10,7 @@ import (
 
 	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/logger"
 	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/testutil"
 
@@ -44,7 +45,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 // First behavior — valid register returns 201 with public user fields.
 func TestRegister_Returns201(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 
 	payload := map[string]string{
 		"name":     "Ada",

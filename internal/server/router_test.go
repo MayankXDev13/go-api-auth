@@ -1,12 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/csrf"
+	"go-api-auth/internal/logger"
 	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/testutil"
 
@@ -30,7 +36,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 }
 
 func TestHealthz(t *testing.T) {
-	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{})
+	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -53,7 +59,7 @@ func TestHealthz(t *testing.T) {
 // The whole point of the fix: auth and todos live on one root router
 // without a Mount("/") panic, and both are reachable.
 func TestComposedRouter_ReachesAuthAndTodos(t *testing.T) {
-	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{})
+	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
 
 	// Auth is public: an empty body is a 400 from the handler, not a
 	// 404 (route missing) and not a 401 (todos RequireAuth leaked onto it).
@@ -74,7 +80,7 @@ func TestComposedRouter_ReachesAuthAndTodos(t *testing.T) {
 // Auth's own protected routes still require a bearer token on the
 // composed router, and a tokenless request must not fall through to todos.
 func TestComposedRouter_AuthProtectedRoutes(t *testing.T) {
-	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{})
+	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil))
@@ -86,7 +92,7 @@ func TestComposedRouter_AuthProtectedRoutes(t *testing.T) {
 func TestCORS(t *testing.T) {
 	cfg := testCfg()
 	cfg.CORSOrigins = []string{"https://app.example.com"}
-	r := NewRouter(newTestDB(t), cfg, mailer.Console{})
+	r := NewRouter(newTestDB(t), cfg, mailer.Console{}, logger.Discard())
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	req.Header.Set("Origin", "https://app.example.com")
@@ -118,7 +124,7 @@ func TestCORS(t *testing.T) {
 }
 
 func TestMiddleware_RequestIDAndRecover(t *testing.T) {
-	r := newBaseRouter()
+	r := newBaseRouter(logger.Discard())
 	r.Get("/boom", func(http.ResponseWriter, *http.Request) { panic("boom") })
 	r.Get("/ok", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
@@ -137,5 +143,155 @@ func TestMiddleware_RequestIDAndRecover(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ok", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("server should stay up after a panic, got %d", rec.Code)
+	}
+}
+
+func TestMiddleware_RequestLogged(t *testing.T) {
+	var buf bytes.Buffer
+	r := newBaseRouter(slog.New(slog.NewJSONHandler(&buf, nil)))
+	r.Get("/logged", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/logged", nil))
+
+	out := buf.String()
+	if !strings.Contains(out, `"path":"/logged"`) || !strings.Contains(out, `"status":200`) {
+		t.Fatalf("request not logged: %q", out)
+	}
+}
+
+func jsonReq(method, path string, body any, cookies []*http.Cookie, headers map[string]string) *http.Request {
+	var rdr io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	req.Header.Set("Content-Type", "application/json")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return req
+}
+
+func cookieNamed(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, c := range cookies {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+// loginAs registers and logs in a user, returning the access token from the
+// body and the cookies set on the login response.
+func loginAs(t *testing.T, h http.Handler, email string) (string, []*http.Cookie) {
+	t.Helper()
+	register := httptest.NewRecorder()
+	h.ServeHTTP(register, jsonReq(http.MethodPost, "/api/v1/auth/register",
+		map[string]string{"name": "Ada", "email": email, "password": "Secret123!"}, nil, nil))
+	if register.Code != http.StatusCreated {
+		t.Fatalf("register: %d %s", register.Code, register.Body.String())
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/login",
+		map[string]string{"email": email, "password": "Secret123!"}, nil, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	access, _ := resp["access_token"].(string)
+	if access == "" {
+		t.Fatal("login returned no access token")
+	}
+	return access, rec.Result().Cookies()
+}
+
+func TestCookieAuth_AccessTokenFromCookie(t *testing.T) {
+	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
+	_, cookies := loginAs(t, h, "cookie@example.com")
+
+	access := cookieNamed(cookies, "access_token")
+	if access == nil || !access.HttpOnly {
+		t.Fatalf("access_token cookie missing or not HttpOnly: %+v", access)
+	}
+	csrfCookie := cookieNamed(cookies, csrf.CookieName)
+	if csrfCookie == nil || csrfCookie.HttpOnly {
+		t.Fatalf("csrf cookie missing or HttpOnly: %+v", csrfCookie)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodGet, "/api/v1/auth/me", nil, cookies, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie-authenticated /me = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCSRF_CookieAuthRequiresHeader(t *testing.T) {
+	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
+	_, cookies := loginAs(t, h, "csrf@example.com")
+	csrfCookie := cookieNamed(cookies, csrf.CookieName)
+	body := map[string]string{"title": "write tests"}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos", body, cookies, nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF header should 403, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos", body, cookies,
+		map[string]string{csrf.HeaderName: "nope"}))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong CSRF token should 403, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos", body, cookies,
+		map[string]string{csrf.HeaderName: csrfCookie.Value}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("valid CSRF token should 201, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodGet, "/api/v1/todos", nil, cookies, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("safe method needs no CSRF token, got %d", rec.Code)
+	}
+}
+
+func TestCSRF_BearerRequestsAreExempt(t *testing.T) {
+	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
+	access, _ := loginAs(t, h, "bearer@example.com")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos",
+		map[string]string{"title": "no csrf needed"},
+		nil, map[string]string{"Authorization": "Bearer " + access}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("bearer request should not need CSRF, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRefresh_CookieAuthRequiresCSRF(t *testing.T) {
+	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
+	_, cookies := loginAs(t, h, "refresh@example.com")
+	csrfCookie := cookieNamed(cookies, csrf.CookieName)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/refresh", nil, cookies, nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("refresh with cookies needs CSRF, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/refresh", nil, cookies,
+		map[string]string{csrf.HeaderName: csrfCookie.Value}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh with valid CSRF should 200, got %d %s", rec.Code, rec.Body.String())
 	}
 }

@@ -14,7 +14,8 @@ import (
 // Config is the single source of runtime configuration. It is loaded once
 // at startup via Load and validated before the server is allowed to start.
 type Config struct {
-	AppEnv string
+	AppEnv   string
+	LogLevel string
 
 	Port        string
 	DatabaseURL string
@@ -58,6 +59,7 @@ type DBConfig struct {
 func Default() Config {
 	return Config{
 		AppEnv:          "development",
+		LogLevel:        "info",
 		Port:            "8080",
 		AccessTTL:       15 * time.Minute,
 		RefreshTTL:      7 * 24 * time.Hour,
@@ -88,6 +90,7 @@ func Load() (Config, error) {
 
 	c := Default()
 	c.AppEnv = envOr("APP_ENV", c.AppEnv)
+	c.LogLevel = envOr("LOG_LEVEL", c.LogLevel)
 	c.Port = envOr("PORT", c.Port)
 	c.DatabaseURL = os.Getenv("DATABASE_URL")
 	c.JWTSecret = os.Getenv("JWT_SECRET")
@@ -147,6 +150,11 @@ func (c Config) Validate() error {
 	}
 	if c.IsProduction() && c.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required in production"))
+	}
+	switch strings.ToLower(c.LogLevel) {
+	case "debug", "info", "warn", "error":
+	default:
+		errs = append(errs, fmt.Errorf("LOG_LEVEL must be debug, info, warn or error, got %q", c.LogLevel))
 	}
 	if p, err := strconv.Atoi(c.Port); err != nil || p < 1 || p > 65535 {
 		errs = append(errs, fmt.Errorf("PORT must be 1-65535, got %q", c.Port))

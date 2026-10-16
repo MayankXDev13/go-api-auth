@@ -2,7 +2,7 @@ package todos
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,20 +18,21 @@ import (
 )
 
 type Handler struct {
-	db *gorm.DB
+	db  *gorm.DB
+	log *slog.Logger
 }
 
-func NewRouter(db *gorm.DB, cfg config.Config) http.Handler {
+func NewRouter(db *gorm.DB, cfg config.Config, log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
-	Register(r, db, cfg)
+	Register(r, db, cfg, log)
 	return r
 }
 
 // Register mounts the todo routes onto r. The routes sit in their own
 // Group so RequireAuth applies here without leaking onto auth routes
 // when both are registered on the same root router.
-func Register(r chi.Router, db *gorm.DB, cfg config.Config) {
-	h := &Handler{db: db}
+func Register(r chi.Router, db *gorm.DB, cfg config.Config, log *slog.Logger) {
+	h := &Handler{db: db, log: log}
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireAuth(db, []byte(cfg.JWTSecret)))
 		r.Post("/api/v1/todos", h.create)
@@ -79,7 +80,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	t := Todo{UserID: userID, Title: in.Title, Description: strings.TrimSpace(in.Description), DueDate: in.DueDate}
 	if err := h.db.Create(&t).Error; err != nil {
-		log.Printf("todos create: %v", err)
+		h.log.Error("todos create", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -195,7 +196,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		t.DueDate = in.DueDate
 	}
 	if err := h.db.Save(&t).Error; err != nil {
-		log.Printf("todos update: %v", err)
+		h.log.Error("todos update", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -215,7 +216,7 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	res := h.db.Where("id = ? AND user_id = ?", id, userID).Delete(&Todo{})
 	if res.Error != nil {
-		log.Printf("todos delete: %v", res.Error)
+		h.log.Error("todos delete", "error", res.Error)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -244,7 +245,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	}
 	t.Completed = true
 	if err := h.db.Save(&t).Error; err != nil {
-		log.Printf("todos complete: %v", err)
+		h.log.Error("todos complete", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}

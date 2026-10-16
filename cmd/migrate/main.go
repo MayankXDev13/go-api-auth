@@ -1,14 +1,16 @@
 package main
 
 import (
-	"log"
 	"os"
 
 	"go-api-auth/internal/config"
 	"go-api-auth/internal/database"
+	"go-api-auth/internal/logger"
 )
 
 func main() {
+	log := logger.Default()
+
 	direction := "up"
 	if len(os.Args) > 1 {
 		direction = os.Args[1]
@@ -16,7 +18,8 @@ func main() {
 
 	url := config.DatabaseURLFromEnv()
 	if url == "" {
-		log.Fatal("DATABASE_URL is required to run migrations")
+		log.Error("DATABASE_URL is required to run migrations")
+		os.Exit(1)
 	}
 
 	var err error
@@ -26,10 +29,12 @@ func main() {
 	case "down":
 		err = database.MigrateDown(url)
 	default:
-		log.Fatalf("unknown direction %q (use up or down)", direction)
+		log.Error("unknown direction", "direction", direction, "usage", "up or down")
+		os.Exit(1)
 	}
 	if err != nil {
-		log.Fatalf("migrate %s: %v", direction, err)
+		log.Error("migrate", "direction", direction, "error", err)
+		os.Exit(1)
 	}
-	log.Printf("migrate %s: done", direction)
+	log.Info("migrate done", "direction", direction)
 }

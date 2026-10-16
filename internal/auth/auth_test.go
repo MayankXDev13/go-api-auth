@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"go-api-auth/internal/auth"
+	"go-api-auth/internal/logger"
 )
 
 func doReq(t *testing.T, h http.Handler, method, path string, payload any, headers map[string]string) *httptest.ResponseRecorder {
@@ -61,7 +62,7 @@ func loginUser(t *testing.T, h http.Handler, email, pass string) (access, refres
 
 func TestRegister_Duplicate409(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "dup@example.com", "Secret123!")
 
 	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/register",
@@ -73,7 +74,7 @@ func TestRegister_Duplicate409(t *testing.T) {
 
 func TestRegister_Invalid400(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	cases := []map[string]string{
 		{"name": "", "email": "a@example.com", "password": "Secret123!"},
 		{"name": "A", "email": "not-an-email", "password": "Secret123!"},
@@ -89,7 +90,7 @@ func TestRegister_Invalid400(t *testing.T) {
 
 func TestRegister_DBError500(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	sqlDB, err := db.DB()
 	if err != nil {
 		t.Fatalf("db handle: %v", err)
@@ -105,7 +106,7 @@ func TestRegister_DBError500(t *testing.T) {
 
 func TestLogin_SuccessAndFailures(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "login@example.com", "Secret123!")
 
 	access, refresh := loginUser(t, r, "login@example.com", "Secret123!")
@@ -128,7 +129,7 @@ func TestLogin_SuccessAndFailures(t *testing.T) {
 
 func TestMe_Auth(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "me@example.com", "Secret123!")
 	access, _ := loginUser(t, r, "me@example.com", "Secret123!")
 
@@ -151,7 +152,7 @@ func TestMe_Auth(t *testing.T) {
 
 func TestRefresh_RotatesAndOldDies(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "ref@example.com", "Secret123!")
 	_, refresh := loginUser(t, r, "ref@example.com", "Secret123!")
 
@@ -182,7 +183,7 @@ func TestRefresh_RotatesAndOldDies(t *testing.T) {
 
 func TestRefresh_ReuseRevokesFamily(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "fam@example.com", "Secret123!")
 	_, refresh1 := loginUser(t, r, "fam@example.com", "Secret123!")
 
@@ -216,7 +217,7 @@ func TestRefresh_ReuseRevokesFamily(t *testing.T) {
 
 func TestLogout_Revokes(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "out@example.com", "Secret123!")
 	_, refresh := loginUser(t, r, "out@example.com", "Secret123!")
 
@@ -235,7 +236,7 @@ func TestLogout_Revokes(t *testing.T) {
 
 func TestChangePassword(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "chg@example.com", "Secret123!")
 	access, _ := loginUser(t, r, "chg@example.com", "Secret123!")
 	h := map[string]string{"Authorization": "Bearer " + access}
@@ -267,7 +268,7 @@ func TestChangePassword(t *testing.T) {
 
 func TestLogout_KeepsOtherSession(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "other@example.com", "Secret123!")
 	access1, refresh1 := loginUser(t, r, "other@example.com", "Secret123!")
 	access2, refresh2 := loginUser(t, r, "other@example.com", "Secret123!")
@@ -301,7 +302,7 @@ func TestLogout_KeepsOtherSession(t *testing.T) {
 
 func TestLogoutAll_RevokesEverything(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	registerUser(t, r, "Ada", "all@example.com", "Secret123!")
 	access1, refresh1 := loginUser(t, r, "all@example.com", "Secret123!")
 	access2, refresh2 := loginUser(t, r, "all@example.com", "Secret123!")
@@ -331,7 +332,7 @@ func TestLogoutAll_RevokesEverything(t *testing.T) {
 func TestReset_RevokesAccessTokens(t *testing.T) {
 	db := setupTestDB(t)
 	mail := &recordingMailer{}
-	r := auth.NewRouter(db, testCfg(), mail)
+	r := auth.NewRouter(db, testCfg(), mail, logger.Discard())
 	registerUser(t, r, "Ada", "rst@example.com", "Secret123!")
 	access, _ := loginUser(t, r, "rst@example.com", "Secret123!")
 
@@ -359,7 +360,7 @@ func TestRateLimit_Returns429(t *testing.T) {
 	db := setupTestDB(t)
 	cfg := testCfg()
 	cfg.RateLimitPerMin = 3
-	r := auth.NewRouter(db, cfg, &recordingMailer{})
+	r := auth.NewRouter(db, cfg, &recordingMailer{}, logger.Discard())
 
 	var last *httptest.ResponseRecorder
 	for i := 0; i < 4; i++ {
@@ -376,7 +377,7 @@ func TestRateLimit_Returns429(t *testing.T) {
 
 func TestPasswordTooLong_Rejected(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{}, logger.Discard())
 	long := strings.Repeat("a", 73)
 
 	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/register",
@@ -400,7 +401,7 @@ func TestRefreshCookie_SecureFollowsEnv(t *testing.T) {
 
 	dev := testCfg()
 	dev.AppEnv = "development"
-	rDev := auth.NewRouter(db, dev, &recordingMailer{})
+	rDev := auth.NewRouter(db, dev, &recordingMailer{}, logger.Discard())
 	registerUser(t, rDev, "Ada", "dev@example.com", "Secret123!")
 	rec := doReq(t, rDev, http.MethodPost, "/api/v1/auth/login",
 		map[string]string{"email": "dev@example.com", "password": "Secret123!"}, nil)
@@ -410,7 +411,7 @@ func TestRefreshCookie_SecureFollowsEnv(t *testing.T) {
 
 	prod := testCfg()
 	prod.AppEnv = "production"
-	rProd := auth.NewRouter(db, prod, &recordingMailer{})
+	rProd := auth.NewRouter(db, prod, &recordingMailer{}, logger.Discard())
 	registerUser(t, rProd, "Ada", "prod@example.com", "Secret123!")
 	rec = doReq(t, rProd, http.MethodPost, "/api/v1/auth/login",
 		map[string]string{"email": "prod@example.com", "password": "Secret123!"}, nil)
@@ -437,7 +438,7 @@ func refreshCookie(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
 func TestForgotReset_Flow(t *testing.T) {
 	db := setupTestDB(t)
 	mail := &recordingMailer{}
-	r := auth.NewRouter(db, testCfg(), mail)
+	r := auth.NewRouter(db, testCfg(), mail, logger.Discard())
 	registerUser(t, r, "Ada", "fp@example.com", "Secret123!")
 
 	// Unknown email still 200 (no enumeration) and sends nothing.

@@ -9,6 +9,7 @@ import (
 
 	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/logger"
 	"go-api-auth/internal/testutil"
 	"go-api-auth/internal/todos"
 
@@ -64,7 +65,7 @@ func doReq(t *testing.T, h http.Handler, method, path string, payload any, token
 
 func TestTodo_Unauthorized(t *testing.T) {
 	db := setupDB(t)
-	r := todos.NewRouter(db, testCfg())
+	r := todos.NewRouter(db, testCfg(), logger.Discard())
 	rec := doReq(t, r, http.MethodGet, "/api/v1/todos", nil, "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
@@ -73,7 +74,7 @@ func TestTodo_Unauthorized(t *testing.T) {
 
 func TestTodo_CRUD(t *testing.T) {
 	db := setupDB(t)
-	r := todos.NewRouter(db, testCfg())
+	r := todos.NewRouter(db, testCfg(), logger.Discard())
 	_, tok := makeUser(t, db, "Ada", "ada@example.com")
 
 	// Create invalid.
@@ -148,7 +149,7 @@ func TestTodo_CRUD(t *testing.T) {
 
 func TestTodo_OwnershipIsolation(t *testing.T) {
 	db := setupDB(t)
-	r := todos.NewRouter(db, testCfg())
+	r := todos.NewRouter(db, testCfg(), logger.Discard())
 	_, tokA := makeUser(t, db, "A", "a@example.com")
 	_, tokB := makeUser(t, db, "B", "b@example.com")
 
@@ -188,7 +189,7 @@ func TestTodo_OwnershipIsolation(t *testing.T) {
 
 func TestTodo_CompleteToggle(t *testing.T) {
 	db := setupDB(t)
-	r := todos.NewRouter(db, testCfg())
+	r := todos.NewRouter(db, testCfg(), logger.Discard())
 	_, tok := makeUser(t, db, "Ada", "c@example.com")
 
 	rec := doReq(t, r, http.MethodPost, "/api/v1/todos", map[string]string{"title": "task"}, tok)

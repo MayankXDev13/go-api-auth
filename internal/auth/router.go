@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/csrf"
 	"go-api-auth/internal/httpx"
 	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/ratelimit"
@@ -24,18 +25,19 @@ type Handler struct {
 	db   *gorm.DB
 	cfg  config.Config
 	mail mailer.Mailer
+	log  *slog.Logger
 }
 
-func NewRouter(db *gorm.DB, cfg config.Config, mail mailer.Mailer) http.Handler {
+func NewRouter(db *gorm.DB, cfg config.Config, mail mailer.Mailer, log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
-	Register(r, db, cfg, mail)
+	Register(r, db, cfg, mail, log)
 	return r
 }
 
 // Register mounts the auth routes onto r. It lets the server compose
 // auth and todos onto one root router without two Mount("/") calls.
-func Register(r chi.Router, db *gorm.DB, cfg config.Config, mail mailer.Mailer) {
-	h := &Handler{db: db, cfg: cfg, mail: mail}
+func Register(r chi.Router, db *gorm.DB, cfg config.Config, mail mailer.Mailer, log *slog.Logger) {
+	h := &Handler{db: db, cfg: cfg, mail: mail, log: log}
 	requireAuth := RequireAuth(db, []byte(cfg.JWTSecret))
 
 	r.Group(func(r chi.Router) {
@@ -93,7 +95,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusConflict, "email already exists")
 			return
 		}
-		log.Printf("register: create user: %v", err)
+		h.log.Error("register: create user", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -145,7 +147,11 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, h.refreshCookie(raw, time.Now().Add(h.cfg.RefreshTTL)))
+	if err := h.setBrowserCookies(w, access, raw); err != nil {
+		h.log.Error("login: set cookies", "error", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal")
+		return
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"access_token": access, "token_type": "Bearer",
 		"refresh_token": raw,
@@ -169,10 +175,43 @@ func (h *Handler) refreshCookie(value string, expires time.Time) *http.Cookie {
 	}
 }
 
-func (h *Handler) clearRefreshCookie(w http.ResponseWriter) {
-	c := h.refreshCookie("", time.Unix(0, 0))
-	c.MaxAge = -1
-	http.SetCookie(w, c)
+func (h *Handler) accessCookie(value string) *http.Cookie {
+	return &http.Cookie{
+		Name:     "access_token",
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   h.cfg.IsProduction(),
+		Expires:  time.Now().Add(h.cfg.AccessTTL),
+	}
+}
+
+// setBrowserCookies stores the access token, refresh token and CSRF token as
+// cookies so a browser client never has to touch localStorage. The CSRF
+// cookie is readable and must be echoed back in the X-CSRF-Token header.
+func (h *Handler) setBrowserCookies(w http.ResponseWriter, access, refresh string) error {
+	csrfTok, err := csrf.Token()
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, h.accessCookie(access))
+	http.SetCookie(w, h.refreshCookie(refresh, time.Now().Add(h.cfg.RefreshTTL)))
+	http.SetCookie(w, csrf.Cookie(csrfTok, h.cfg.AccessTTL, h.cfg.IsProduction()))
+	return nil
+}
+
+func (h *Handler) clearCookies(w http.ResponseWriter) {
+	for _, name := range []string{"access_token", "refresh_token", csrf.CookieName} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: name != csrf.CookieName,
+			Secure:   h.cfg.IsProduction(),
+		})
+	}
 }
 
 func refreshTokenFromRequest(r *http.Request) string {
@@ -204,7 +243,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	// replayed. Revoke the whole family to force re-authentication.
 	if rt.RevokedAt != nil {
 		if err := h.db.Model(&RefreshToken{}).Where("family_id = ?", rt.FamilyID).Update("revoked_at", time.Now()).Error; err != nil {
-			log.Printf("refresh: revoke family: %v", err)
+			h.log.Error("refresh: revoke family", "error", err)
 		}
 		httpx.Error(w, http.StatusUnauthorized, "invalid refresh token")
 		return
@@ -217,7 +256,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	rt.RevokedAt = &now
 	if err := h.db.Save(&rt).Error; err != nil {
-		log.Printf("refresh: revoke old token: %v", err)
+		h.log.Error("refresh: revoke old token", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -238,11 +277,15 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.Create(&RefreshToken{UserID: rt.UserID, FamilyID: rt.FamilyID, TokenHash: newHash, ExpiresAt: time.Now().Add(h.cfg.RefreshTTL)}).Error; err != nil {
-		log.Printf("refresh: create token: %v", err)
+		h.log.Error("refresh: create token", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	http.SetCookie(w, h.refreshCookie(newRaw, time.Now().Add(h.cfg.RefreshTTL)))
+	if err := h.setBrowserCookies(w, access, newRaw); err != nil {
+		h.log.Error("refresh: set cookies", "error", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal")
+		return
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"access_token": access, "token_type": "Bearer", "refresh_token": newRaw,
 	})
@@ -256,11 +299,11 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	if err := h.db.Model(&RefreshToken{}).Where("token_hash = ?", HashOpaque(raw)).Update("revoked_at", now).Error; err != nil {
-		log.Printf("logout: revoke token: %v", err)
+		h.log.Error("logout: revoke token", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	h.clearRefreshCookie(w)
+	h.clearCookies(w)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
@@ -315,7 +358,7 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.NewPassword), h.cfg.BcryptCost)
 	if err != nil {
-		log.Printf("change-password: hash: %v", err)
+		h.log.Error("change-password: hash", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -323,7 +366,7 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 		"password_hash": string(hash),
 		"token_version": gorm.Expr("token_version + 1"),
 	}).Error; err != nil {
-		log.Printf("change-password: update: %v", err)
+		h.log.Error("change-password: update", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -346,7 +389,7 @@ func (h *Handler) forgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := IssueResetToken(h.db, u.ID, h.cfg.ResetTTL)
 	if err != nil {
-		log.Printf("forgot-password: issue token: %v", err)
+		h.log.Error("forgot-password: issue token", "error", err)
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
 		return
 	}
@@ -356,7 +399,7 @@ func (h *Handler) forgotPassword(w http.ResponseWriter, r *http.Request) {
 		Subject: "Reset your password",
 		Body:    "Use the link below to reset your password:\n\n" + link,
 	}); err != nil {
-		log.Printf("forgot-password: send mail: %v", err)
+		h.log.Error("forgot-password: send mail", "error", err)
 	}
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
 }
@@ -391,7 +434,7 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.NewPassword), h.cfg.BcryptCost)
 	if err != nil {
-		log.Printf("reset-password: hash: %v", err)
+		h.log.Error("reset-password: hash", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -410,7 +453,7 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
 		return tx.Model(&RefreshToken{}).Where("user_id = ? AND revoked_at IS NULL", prt.UserID).Update("revoked_at", now).Error
 	})
 	if err != nil {
-		log.Printf("reset-password: %v", err)
+		h.log.Error("reset-password", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -436,10 +479,10 @@ func (h *Handler) logoutAll(w http.ResponseWriter, r *http.Request) {
 			Update("revoked_at", now).Error
 	})
 	if err != nil {
-		log.Printf("logout-all: %v", err)
+		h.log.Error("logout-all", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	h.clearRefreshCookie(w)
+	h.clearCookies(w)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "logged out everywhere"})
 }

@@ -8,7 +8,7 @@ A todo API with real authentication, written in Go. chi handles routing, GORM ha
 - Auth: register, login, refresh, logout, logout-all, me, change-password, forgot-password, reset-password.
 - Todos: create, read, update, delete, complete toggle, plus filters, search, and pagination.
 - Per-user token revocation and refresh-token family reuse detection.
-- Rate limiting on the auth endpoints, configurable CORS, request IDs, request logging, panic recovery, and graceful shutdown.
+- Rate limiting on the auth endpoints, configurable CORS, request IDs, structured request logging, panic recovery, and graceful shutdown. Logs are human-readable text in development and JSON in production.
 
 Every route has an HTTP test built on `httptest`. `go test ./...` is green.
 
@@ -22,12 +22,14 @@ cmd/migrate/main.go       apply or roll back migrations (up/down)
 migrations/               golang-migrate SQL, embedded in the binary
 internal/server/          the one root router and cross-cutting middleware
 internal/config/          typed env config, loaded and validated at boot
+internal/logger/          slog logger: JSON in production, text otherwise
 internal/database/        open the pool, run migrations
 internal/auth/            User, tokens, middleware, register/login/etc
 internal/todos/           Todo model and CRUD
 internal/mailer/          Mailer interface with console and SMTP backends
 internal/ratelimit/       in-memory limiter and middleware
 internal/cors/            origin-allowlist CORS middleware
+internal/csrf/            double-submit CSRF middleware for cookie auth
 internal/httpx/           shared JSON and error response helpers
 internal/testutil/        throwaway Postgres database for tests
 ```
@@ -50,6 +52,7 @@ Config comes from the environment, with a local `.env` loaded on top when presen
 | --- | --- | --- |
 | `PORT` | listen port | `8080` |
 | `APP_ENV` | `development`, `test`, or `production` | `development` |
+| `LOG_LEVEL` | `debug`, `info`, `warn`, or `error` | `info` |
 | `DATABASE_URL` | Postgres DSN; falls back to a local `app.db` (sqlite) when unset | required in production |
 | `TEST_DATABASE_URL` | Postgres DSN for tests | falls back to `DATABASE_URL` |
 | `JWT_SECRET` | HS256 signing key, at least 32 bytes | required |
@@ -78,7 +81,9 @@ POST /api/v1/auth/forgot-password   {"email"} -> always 200, no user enumeration
 POST /api/v1/auth/reset-password    {"token","new_password>=8"}, single use, revokes sessions
 ```
 
-Access tokens are HS256 JWTs that live 15 minutes. Refresh tokens are opaque, stored as SHA-256 hashes, live 7 days, and rotate on every refresh. The refresh cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` when `APP_ENV=production`. Passwords longer than 72 bytes are rejected, since bcrypt only reads that much.
+Access tokens are HS256 JWTs that live 15 minutes. Refresh tokens are opaque, stored as SHA-256 hashes, live 7 days, and rotate on every refresh. Passwords longer than 72 bytes are rejected, since bcrypt only reads that much.
+
+Browser clients can avoid localStorage entirely. Login and refresh set three cookies: `access_token` and `refresh_token` (both `HttpOnly`) plus a readable `csrf_token`. Requests are then authenticated from the access cookie. Because cookies are sent automatically, unsafe requests that use them must also send an `X-CSRF-Token` header equal to the `csrf_token` cookie; a missing or wrong value returns 403. Bearer-token requests are exempt, since a browser never attaches the `Authorization` header on its own. All cookies are `SameSite=Lax` and `Secure` when `APP_ENV=production`.
 
 Revocation works through a per-user `token_version` claim. `change-password`, `reset-password`, and `logout-all` bump it, so tokens issued earlier stop working right away. Reusing an already-rotated refresh token revokes the entire token family.
 

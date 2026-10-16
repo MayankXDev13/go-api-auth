@@ -72,6 +72,7 @@ func TestLoad_InvalidValues(t *testing.T) {
 		"bad bcrypt cost": {"BCRYPT_COST": "99"},
 		"bad access ttl":  {"JWT_ACCESS_TTL_MIN": "-1"},
 		"non-int bcrypt":  {"BCRYPT_COST": "abc"},
+		"bad log level":   {"LOG_LEVEL": "verbose"},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -85,12 +85,14 @@ paths:
               $ref: "#/components/schemas/LoginRequest"
       responses:
         "200":
-          description: Logged in. Also sets the `refresh_token` cookie.
+          description: Logged in. Also sets cookies.
           headers:
             Set-Cookie:
               schema:
                 type: string
-              description: HttpOnly refresh token cookie
+              description: |
+                Sets `access_token` and `refresh_token` (both HttpOnly) and a
+                readable `csrf_token` cookie.
           content:
             application/json:
               schema:
@@ -122,6 +124,8 @@ paths:
       security:
         - cookieAuth: []
         - {}
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       requestBody:
         required: false
         content:
@@ -130,7 +134,7 @@ paths:
               $ref: "#/components/schemas/RefreshRequest"
       responses:
         "200":
-          description: New access and refresh tokens. Also sets the cookie.
+          description: New access and refresh tokens. Also sets the cookies.
           headers:
             Set-Cookie:
               schema:
@@ -147,6 +151,8 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: invalid refresh token
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -161,6 +167,8 @@ paths:
       security:
         - cookieAuth: []
         - {}
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       requestBody:
         required: false
         content:
@@ -169,7 +177,7 @@ paths:
               $ref: "#/components/schemas/RefreshRequest"
       responses:
         "200":
-          description: Refresh token revoked
+          description: Refresh token revoked and cookies cleared
           content:
             application/json:
               schema:
@@ -178,6 +186,8 @@ paths:
                 status: logged out
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -244,6 +254,7 @@ paths:
       operationId: me
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
       responses:
         "200":
           description: Current user
@@ -262,6 +273,9 @@ paths:
       operationId: changePassword
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       requestBody:
         required: true
         content:
@@ -281,6 +295,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -292,6 +308,9 @@ paths:
       operationId: logoutAll
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       responses:
         "200":
           description: Logged out everywhere
@@ -303,6 +322,8 @@ paths:
                 status: logged out everywhere
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -313,6 +334,9 @@ paths:
       operationId: createTodo
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       requestBody:
         required: true
         content:
@@ -330,6 +354,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
     get:
@@ -338,6 +364,7 @@ paths:
       operationId: listTodos
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
       parameters:
         - name: completed
           in: query
@@ -384,6 +411,7 @@ paths:
       operationId: getTodo
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
       responses:
         "200":
           description: The todo
@@ -401,6 +429,9 @@ paths:
       operationId: updateTodo
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       requestBody:
         required: true
         content:
@@ -418,6 +449,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -428,11 +461,16 @@ paths:
       operationId: deleteTodo
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       responses:
         "204":
           description: Deleted
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -447,6 +485,9 @@ paths:
       operationId: completeTodo
       security:
         - bearerAuth: []
+        - accessCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       responses:
         "200":
           description: The completed todo
@@ -456,6 +497,8 @@ paths:
                 $ref: "#/components/schemas/Todo"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -468,6 +511,14 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Access token from login or refresh.
+    accessCookieAuth:
+      type: apiKey
+      in: cookie
+      name: access_token
+      description: |
+        HttpOnly access token cookie set by login and refresh. Browser clients
+        use this instead of storing the access token in localStorage. Unsafe
+        requests that use it must also send the `X-CSRF-Token` header.
     cookieAuth:
       type: apiKey
       in: cookie
@@ -475,6 +526,16 @@ components:
       description: HttpOnly refresh token cookie set by login and refresh.
 
   parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: |
+        Required only for unsafe requests (POST, PUT, PATCH, DELETE) that
+        authenticate with a cookie. Send the value of the readable
+        `csrf_token` cookie. Bearer-token requests do not need it.
+      schema:
+        type: string
     TodoID:
       name: id
       in: path
@@ -520,6 +581,14 @@ components:
             $ref: "#/components/schemas/Error"
           example:
             error: too many requests
+    Forbidden:
+      description: CSRF token missing or invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: csrf token missing
     InternalError:
       description: Unexpected server error
       content:
