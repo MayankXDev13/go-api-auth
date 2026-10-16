@@ -1,99 +1,90 @@
-# go-api-auth, todo plus auth in Go
+# go-api-auth
 
-I am building this as a small todo API with real auth. Go 1.26, chi for routing, GORM for models. Postgres in prod and in the test suite (each test package gets a throwaway database).
+A todo API with real authentication, written in Go. chi handles routing, GORM handles models, and Postgres stores data in production (sqlite is the local fallback). The test suite runs against Postgres, with a throwaway database per package, so tests exercise the same engine as production.
 
-## What works now
+## What it does
 
-- [x] `GET /healthz` returns `{"status":"ok"}`
-- [x] register, login, refresh, logout, me, change-password
-- [x] forgot and reset password
-- [x] todos CRUD, plus complete toggle, filters, search, pagination
-- [x] per-user token revocation, refresh-token family reuse detection
-- [x] rate limiting, CORS, request logging/recovery, graceful shutdown
+- `GET /healthz` returns `{"status":"ok"}`.
+- Auth: register, login, refresh, logout, logout-all, me, change-password, forgot-password, reset-password.
+- Todos: create, read, update, delete, complete toggle, plus filters, search, and pagination.
+- Per-user token revocation and refresh-token family reuse detection.
+- Rate limiting on the auth endpoints, configurable CORS, request IDs, request logging, panic recovery, and graceful shutdown.
 
-Every route above is covered by an HTTP test with `httptest`. `go test ./...` is green.
+Every route has an HTTP test built on `httptest`. `go test ./...` is green.
 
-## How it is laid out
+## Layout
 
-Go does not use `src/` for this. I keep app code under `cmd/` and `internal/`. The compiler blocks outside imports of `internal/`, which is what I want.
+App code lives in `cmd/` and `internal/`. Go blocks imports of `internal/` from outside the module, which is what I want.
 
 ```
-cmd/api/main.go          # entrypoint: open db, serve, graceful shutdown
-cmd/migrate/main.go      # applies versioned migrations (up/down)
-migrations/              # golang-migrate SQL files, embedded in the binary
-internal/server/         # assembles the one root router + middleware
-internal/config/         # typed env config, loaded and validated at boot
-internal/database/       # open pool, run migrations
-internal/auth/           # User, tokens, middleware, register/login/etc
-internal/todos/          # Todo model and CRUD
-internal/mailer/         # Mailer interface: console (dev) and SMTP
-internal/ratelimit/      # in-memory limiter + middleware
-internal/cors/           # origin-allowlist CORS middleware
-internal/httpx/          # shared JSON / error response helpers
-internal/testutil/       # per-package throwaway Postgres for tests
+cmd/api/main.go           entrypoint: open db, serve, shut down on SIGINT/SIGTERM
+cmd/migrate/main.go       apply or roll back migrations (up/down)
+migrations/               golang-migrate SQL, embedded in the binary
+internal/server/          the one root router and cross-cutting middleware
+internal/config/          typed env config, loaded and validated at boot
+internal/database/        open the pool, run migrations
+internal/auth/            User, tokens, middleware, register/login/etc
+internal/todos/           Todo model and CRUD
+internal/mailer/          Mailer interface with console and SMTP backends
+internal/ratelimit/       in-memory limiter and middleware
+internal/cors/            origin-allowlist CORS middleware
+internal/httpx/           shared JSON and error response helpers
+internal/testutil/        throwaway Postgres database for tests
 ```
 
-`server.NewRouter(db, cfg, mail)` is the single place the app is wired: middleware, healthz, plus `auth.Register` and `todos.Register`. Neither package mounts itself at `/`, so the old two-`Mount("/")` clash that panicked at boot is gone. `auth.NewRouter`/`todos.NewRouter` still exist as thin wrappers for tests.
+`server.NewRouter(db, cfg, mail)` is the single place the app is wired: middleware, healthz, then `auth.Register` and `todos.Register`. No package mounts itself at `/`, so the two-`Mount("/")` clash that used to panic at boot is gone. `auth.NewRouter` and `todos.NewRouter` still exist as thin wrappers for tests.
 
 Schema changes live in `migrations/` and are applied with `go run ./cmd/migrate up`. The app no longer calls `AutoMigrate`.
 
-## How to run it
-
-```bash
-go test ./... -v
-go run ./cmd/migrate up  # apply schema
-go run ./cmd/api         # listens on :8080, or $PORT
-```
-
-Copy env before you run:
+## Running it
 
 ```bash
 cp .env.example .env
+go run ./cmd/migrate up   # create the schema
+go run ./cmd/api          # listens on :8080, or $PORT
 ```
 
-Tests need a reachable Postgres. They use `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), create a throwaway database per test package, migrate it, and drop it afterwards.
+Config comes from the environment, with a local `.env` loaded on top when present, and is validated at boot. Bad values fail fast instead of at the first request.
 
-## Configuration
-
-All config is read from the environment (with a local `.env` loaded on top when present) and validated at boot.
-
-```
-PORT                     listen port (default 8080)
-APP_ENV                  development | test | production (Secure cookies in production)
-DATABASE_URL             Postgres DSN
-TEST_DATABASE_URL        Postgres DSN for tests (defaults to DATABASE_URL)
-JWT_SECRET               >=32 bytes, required
-JWT_ACCESS_TTL_MIN       access token TTL (default 15)
-JWT_REFRESH_TTL_DAYS     refresh token TTL (default 7)
-JWT_RESET_TTL_MIN        password-reset token TTL (default 30)
-BCRYPT_COST              bcrypt cost (default 12)
-APP_BASE_URL             base URL used to build password-reset links
-CORS_ORIGINS             comma-separated allowed browser origins (empty disables CORS)
-MAIL_FROM, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS   mailer (console when SMTP_HOST unset)
-RATE_LIMIT_PER_MIN       per-IP limit on auth endpoints (0 disables)
-DB_MAX_OPEN_CONNS        connection pool max open (default 25)
-DB_MAX_IDLE_CONNS        connection pool max idle (default 5)
-```
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `PORT` | listen port | `8080` |
+| `APP_ENV` | `development`, `test`, or `production` | `development` |
+| `DATABASE_URL` | Postgres DSN; falls back to a local `app.db` (sqlite) when unset | required in production |
+| `TEST_DATABASE_URL` | Postgres DSN for tests | falls back to `DATABASE_URL` |
+| `JWT_SECRET` | HS256 signing key, at least 32 bytes | required |
+| `JWT_ACCESS_TTL_MIN` | access token lifetime, minutes | `15` |
+| `JWT_REFRESH_TTL_DAYS` | refresh token lifetime, days | `7` |
+| `JWT_RESET_TTL_MIN` | password-reset token lifetime, minutes | `30` |
+| `BCRYPT_COST` | bcrypt work factor | `12` |
+| `APP_BASE_URL` | base URL for password-reset links | `http://localhost:8080` |
+| `CORS_ORIGINS` | comma-separated allowed browser origins; empty disables CORS | empty |
+| `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | mailer; console output when `SMTP_HOST` is unset | console |
+| `RATE_LIMIT_PER_MIN` | per-IP limit on auth endpoints; `0` disables | `60` |
+| `DB_MAX_OPEN_CONNS` | connection pool max open | `25` |
+| `DB_MAX_IDLE_CONNS` | connection pool max idle | `5` |
 
 ## Auth API
 
 ```
 POST /api/v1/auth/register         {"name","email","password>=8"} -> 201 {id,name,email}
-POST /api/v1/auth/login            {"email","password"} -> 200 {access_token,refresh_token,user}, sets refresh cookie
-POST /api/v1/auth/refresh          body or cookie refresh_token -> 200 {access_token,refresh_token}, rotates
-POST /api/v1/auth/logout           revokes the refresh token
-POST /api/v1/auth/logout-all       revokes all refresh tokens + bumps token version
-GET  /api/v1/auth/me               Bearer access token -> 200 {id,name,email,created_at}
-PUT  /api/v1/auth/change-password  Bearer + {"current_password","new_password>=8"}
-POST /api/v1/auth/forgot-password  {"email"} -> always 200 (no user enumeration)
-POST /api/v1/auth/reset-password   {"token","new_password>=8"}, single use, revokes sessions
+POST /api/v1/auth/login             {"email","password"} -> 200 {access_token,refresh_token,user}, sets refresh cookie
+POST /api/v1/auth/refresh           body or cookie refresh_token -> 200 {access_token,refresh_token}, rotates
+POST /api/v1/auth/logout            revokes the refresh token
+POST /api/v1/auth/logout-all        revokes all refresh tokens and bumps token version
+GET  /api/v1/auth/me                Bearer access token -> 200 {id,name,email,created_at}
+PUT  /api/v1/auth/change-password   Bearer + {"current_password","new_password>=8"}
+POST /api/v1/auth/forgot-password   {"email"} -> always 200, no user enumeration
+POST /api/v1/auth/reset-password    {"token","new_password>=8"}, single use, revokes sessions
 ```
 
-Access tokens are HS256 JWTs (15 min). Refresh tokens are opaque, stored hashed (SHA-256), 7 days, and rotate on every refresh.
+Access tokens are HS256 JWTs that live 15 minutes. Refresh tokens are opaque, stored as SHA-256 hashes, live 7 days, and rotate on every refresh. The refresh cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` when `APP_ENV=production`. Passwords longer than 72 bytes are rejected, since bcrypt only reads that much.
 
-Revocation: each user has a `token_version`; `change-password`, `reset-password` and `logout-all` bump it, so outstanding access tokens stop working immediately. Reusing an already-rotated refresh token revokes the whole token family.
+Revocation works through a per-user `token_version` claim. `change-password`, `reset-password`, and `logout-all` bump it, so tokens issued earlier stop working right away. Reusing an already-rotated refresh token revokes the entire token family.
 
-## Todos API (all require `Authorization: Bearer <access>`)
+## Todos API
+
+All routes need `Authorization: Bearer <access>`.
 
 ```
 POST   /api/v1/todos                    {"title","description","due_date"} -> 201
@@ -104,9 +95,14 @@ DELETE /api/v1/todos/{id}               -> 204
 PATCH  /api/v1/todos/{id}/complete
 ```
 
-Todos are scoped to the owner; another user gets 404, never someone else's row.
+Listing defaults to 20 per page and caps at 100. Todos belong to their owner; requesting someone else's row returns 404, not a different user's data.
+
+## Tests
+
+`go test ./...` needs a reachable Postgres. Set `TEST_DATABASE_URL`, or let it fall back to `DATABASE_URL`. Each test package creates its own database, runs the real migrations, truncates between tests, and drops the database when the package finishes, so packages run in parallel safely.
 
 ## Known gaps
 
-- `forgot-password` sends the reset link through the configured mailer (`Console` in dev, SMTP when `SMTP_HOST` is set); the raw token is never returned in the response.
-- The in-memory rate limiter is per-process; a multi-instance deploy needs a shared store.
+- The rate limiter keeps counters in memory, so it is per-process. A multi-instance deploy would need a shared store.
+- `forgot-password` sends the reset link through the configured mailer and never returns the raw token in the response.
+- There is no email-verification flow yet.
