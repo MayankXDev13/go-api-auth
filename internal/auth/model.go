@@ -20,6 +20,7 @@ type User struct {
 type RefreshToken struct {
 	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"-"`
 	UserID    uuid.UUID  `gorm:"type:uuid;index;not null" json:"-"`
+	FamilyID  uuid.UUID  `gorm:"type:uuid;index;not null" json:"-"`
 	TokenHash string     `gorm:"size:64;uniqueIndex;not null" json:"-"`
 	ExpiresAt time.Time  `gorm:"not null" json:"-"`
 	RevokedAt *time.Time `json:"-"`

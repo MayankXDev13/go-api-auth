@@ -180,6 +180,40 @@ func TestRefresh_RotatesAndOldDies(t *testing.T) {
 	}
 }
 
+func TestRefresh_ReuseRevokesFamily(t *testing.T) {
+	db := setupTestDB(t)
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	registerUser(t, r, "Ada", "fam@example.com", "Secret123!")
+	_, refresh1 := loginUser(t, r, "fam@example.com", "Secret123!")
+
+	// Rotate once: refresh1 -> refresh2 (same family).
+	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/refresh",
+		map[string]string{"refresh_token": refresh1}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	refresh2, _ := resp["refresh_token"].(string)
+	if refresh2 == "" || refresh2 == refresh1 {
+		t.Fatalf("expected rotated token, got %v", resp)
+	}
+
+	// Replay the old token: rejected.
+	rec = doReq(t, r, http.MethodPost, "/api/v1/auth/refresh",
+		map[string]string{"refresh_token": refresh1}, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed token should 401, got %d", rec.Code)
+	}
+
+	// The whole family is now revoked, including the newest token.
+	rec = doReq(t, r, http.MethodPost, "/api/v1/auth/refresh",
+		map[string]string{"refresh_token": refresh2}, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("family should be revoked, refresh2 got %d", rec.Code)
+	}
+}
+
 func TestLogout_Revokes(t *testing.T) {
 	db := setupTestDB(t)
 	r := auth.NewRouter(db, testCfg(), &recordingMailer{})

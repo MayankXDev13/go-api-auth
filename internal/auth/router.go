@@ -14,6 +14,7 @@ import (
 	"go-api-auth/internal/mailer"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -127,7 +128,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	rt := RefreshToken{UserID: u.ID, TokenHash: hash, ExpiresAt: time.Now().Add(h.cfg.RefreshTTL)}
+	rt := RefreshToken{UserID: u.ID, FamilyID: uuid.New(), TokenHash: hash, ExpiresAt: time.Now().Add(h.cfg.RefreshTTL)}
 	if err := h.db.Create(&rt).Error; err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
@@ -170,7 +171,16 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
-	if rt.RevokedAt != nil || time.Now().After(rt.ExpiresAt) {
+	// A previously rotated token being presented again means the token was
+	// replayed. Revoke the whole family to force re-authentication.
+	if rt.RevokedAt != nil {
+		if err := h.db.Model(&RefreshToken{}).Where("family_id = ?", rt.FamilyID).Update("revoked_at", time.Now()).Error; err != nil {
+			log.Printf("refresh: revoke family: %v", err)
+		}
+		httpx.Error(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+	if time.Now().After(rt.ExpiresAt) {
 		httpx.Error(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
@@ -198,7 +208,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	if err := h.db.Create(&RefreshToken{UserID: rt.UserID, TokenHash: newHash, ExpiresAt: time.Now().Add(h.cfg.RefreshTTL)}).Error; err != nil {
+	if err := h.db.Create(&RefreshToken{UserID: rt.UserID, FamilyID: rt.FamilyID, TokenHash: newHash, ExpiresAt: time.Now().Add(h.cfg.RefreshTTL)}).Error; err != nil {
 		log.Printf("refresh: create token: %v", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
