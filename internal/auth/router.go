@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"go-api-auth/internal/config"
-	"go-api-auth/internal/csrf"
 	"go-api-auth/internal/httpx"
 	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/ratelimit"
@@ -46,13 +45,13 @@ func Register(r chi.Router, db *gorm.DB, cfg config.Config, mail mailer.Mailer, 
 		}
 		r.Post("/api/v1/auth/register", h.register)
 		r.Post("/api/v1/auth/login", h.login)
-		r.With(csrf.Middleware).Post("/api/v1/auth/refresh", h.refresh)
-		r.With(csrf.Middleware).Post("/api/v1/auth/logout", h.logout)
+		r.Post("/api/v1/auth/refresh", h.refresh)
+		r.Post("/api/v1/auth/logout", h.logout)
 		r.Post("/api/v1/auth/forgot-password", h.forgotPassword)
 		r.Post("/api/v1/auth/reset-password", h.resetPassword)
-		r.With(requireAuth, csrf.Middleware).Get("/api/v1/auth/me", h.me)
-		r.With(requireAuth, csrf.Middleware).Put("/api/v1/auth/change-password", h.changePassword)
-		r.With(requireAuth, csrf.Middleware).Post("/api/v1/auth/logout-all", h.logoutAll)
+		r.With(requireAuth).Get("/api/v1/auth/me", h.me)
+		r.With(requireAuth).Put("/api/v1/auth/change-password", h.changePassword)
+		r.With(requireAuth).Post("/api/v1/auth/logout-all", h.logoutAll)
 	})
 }
 
@@ -147,7 +146,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.setBrowserCookies(w, access, raw); err != nil {
+	if err := h.setTokenCookies(w, access, raw); err != nil {
 		h.log.Error("login: set cookies", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
@@ -163,16 +162,14 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 // some implementations, so they are rejected instead.
 const maxPasswordBytes = 72
 
-func (h *Handler) refreshCookie(value string, expires time.Time) *http.Cookie {
-	return &http.Cookie{
-		Name:     "refresh_token",
-		Value:    value,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   h.cfg.IsProduction(),
-		Expires:  expires,
-	}
+// setTokenCookies writes the access and refresh tokens as HttpOnly cookies so
+// a browser client holds them without JavaScript access. Requests authenticate
+// from the access_token cookie, and the bearer header still works for API
+// clients.
+func (h *Handler) setTokenCookies(w http.ResponseWriter, access, refresh string) error {
+	http.SetCookie(w, h.accessCookie(access))
+	http.SetCookie(w, h.refreshCookie(refresh, time.Now().Add(h.cfg.RefreshTTL)))
+	return nil
 }
 
 func (h *Handler) accessCookie(value string) *http.Cookie {
@@ -187,28 +184,26 @@ func (h *Handler) accessCookie(value string) *http.Cookie {
 	}
 }
 
-// setBrowserCookies stores the access token, refresh token and CSRF token as
-// cookies so a browser client never has to touch localStorage. The CSRF
-// cookie is readable and must be echoed back in the X-CSRF-Token header.
-func (h *Handler) setBrowserCookies(w http.ResponseWriter, access, refresh string) error {
-	csrfTok, err := csrf.Token()
-	if err != nil {
-		return err
+func (h *Handler) refreshCookie(value string, expires time.Time) *http.Cookie {
+	return &http.Cookie{
+		Name:     "refresh_token",
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   h.cfg.IsProduction(),
+		Expires:  expires,
 	}
-	http.SetCookie(w, h.accessCookie(access))
-	http.SetCookie(w, h.refreshCookie(refresh, time.Now().Add(h.cfg.RefreshTTL)))
-	http.SetCookie(w, csrf.Cookie(csrfTok, h.cfg.AccessTTL, h.cfg.IsProduction()))
-	return nil
 }
 
-func (h *Handler) clearCookies(w http.ResponseWriter) {
-	for _, name := range []string{"access_token", "refresh_token", csrf.CookieName} {
+func (h *Handler) clearAuthCookies(w http.ResponseWriter) {
+	for _, name := range []string{"access_token", "refresh_token"} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
-			HttpOnly: name != csrf.CookieName,
+			HttpOnly: true,
 			Secure:   h.cfg.IsProduction(),
 		})
 	}
@@ -281,7 +276,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	if err := h.setBrowserCookies(w, access, newRaw); err != nil {
+	if err := h.setTokenCookies(w, access, newRaw); err != nil {
 		h.log.Error("refresh: set cookies", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
@@ -303,7 +298,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	h.clearCookies(w)
+	h.clearAuthCookies(w)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
@@ -483,6 +478,6 @@ func (h *Handler) logoutAll(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	h.clearCookies(w)
+	h.clearAuthCookies(w)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "logged out everywhere"})
 }

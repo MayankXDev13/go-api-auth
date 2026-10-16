@@ -29,7 +29,6 @@ internal/todos/           Todo model and CRUD
 internal/mailer/          Mailer interface with console and SMTP backends
 internal/ratelimit/       in-memory limiter and middleware
 internal/cors/            origin-allowlist CORS middleware
-internal/csrf/            double-submit CSRF middleware for cookie auth
 internal/httpx/           shared JSON and error response helpers
 internal/testutil/        throwaway Postgres database for tests
 ```
@@ -83,7 +82,7 @@ POST /api/v1/auth/reset-password    {"token","new_password>=8"}, single use, rev
 
 Access tokens are HS256 JWTs that live 15 minutes. Refresh tokens are opaque, stored as SHA-256 hashes, live 7 days, and rotate on every refresh. Passwords longer than 72 bytes are rejected, since bcrypt only reads that much.
 
-Browser clients can avoid localStorage entirely. Login and refresh set three cookies: `access_token` and `refresh_token` (both `HttpOnly`) plus a readable `csrf_token`. Requests are then authenticated from the access cookie. Because cookies are sent automatically, unsafe requests that use them must also send an `X-CSRF-Token` header equal to the `csrf_token` cookie; a missing or wrong value returns 403. Bearer-token requests are exempt, since a browser never attaches the `Authorization` header on its own. All cookies are `SameSite=Lax` and `Secure` when `APP_ENV=production`.
+Browser clients can skip localStorage. Login and refresh set two cookies: `access_token` and `refresh_token`, both `HttpOnly`. The browser then authenticates from the access cookie automatically, and API clients can keep using the `Authorization: Bearer` header. Both cookies are `SameSite=Lax` and `Secure` when `APP_ENV=production`.
 
 Revocation works through a per-user `token_version` claim. `change-password`, `reset-password`, and `logout-all` bump it, so tokens issued earlier stop working right away. Reusing an already-rotated refresh token revokes the entire token family.
 

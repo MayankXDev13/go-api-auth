@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"go-api-auth/internal/config"
-	"go-api-auth/internal/csrf"
 	"go-api-auth/internal/logger"
 	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/testutil"
@@ -211,17 +210,17 @@ func loginAs(t *testing.T, h http.Handler, email string) (string, []*http.Cookie
 	return access, rec.Result().Cookies()
 }
 
-func TestCookieAuth_AccessTokenFromCookie(t *testing.T) {
+func TestLogin_SetsAccessAndRefreshCookies(t *testing.T) {
 	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
 	_, cookies := loginAs(t, h, "cookie@example.com")
 
 	access := cookieNamed(cookies, "access_token")
-	if access == nil || !access.HttpOnly {
+	if access == nil || access.Value == "" || !access.HttpOnly {
 		t.Fatalf("access_token cookie missing or not HttpOnly: %+v", access)
 	}
-	csrfCookie := cookieNamed(cookies, csrf.CookieName)
-	if csrfCookie == nil || csrfCookie.HttpOnly {
-		t.Fatalf("csrf cookie missing or HttpOnly: %+v", csrfCookie)
+	refresh := cookieNamed(cookies, "refresh_token")
+	if refresh == nil || refresh.Value == "" || !refresh.HttpOnly {
+		t.Fatalf("refresh_token cookie missing or not HttpOnly: %+v", refresh)
 	}
 
 	rec := httptest.NewRecorder()
@@ -231,89 +230,47 @@ func TestCookieAuth_AccessTokenFromCookie(t *testing.T) {
 	}
 }
 
-func TestCSRF_CookieAuthRequiresHeader(t *testing.T) {
+func TestCookieAuth_TodosWork(t *testing.T) {
 	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
-	_, cookies := loginAs(t, h, "csrf@example.com")
-	csrfCookie := cookieNamed(cookies, csrf.CookieName)
-	body := map[string]string{"title": "write tests"}
+	_, cookies := loginAs(t, h, "todo-cookie@example.com")
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos", body, cookies, nil))
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("missing CSRF header should 403, got %d %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos", body, cookies,
-		map[string]string{csrf.HeaderName: "nope"}))
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("wrong CSRF token should 403, got %d", rec.Code)
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos", body, cookies,
-		map[string]string{csrf.HeaderName: csrfCookie.Value}))
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos",
+		map[string]string{"title": "cookie auth"}, cookies, nil))
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("valid CSRF token should 201, got %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("cookie-authenticated create = %d %s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, jsonReq(http.MethodGet, "/api/v1/todos", nil, cookies, nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("safe method needs no CSRF token, got %d", rec.Code)
+		t.Fatalf("cookie-authenticated list = %d %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestCSRF_BearerRequestsAreExempt(t *testing.T) {
+func TestRefresh_FromCookie(t *testing.T) {
+	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
+	_, cookies := loginAs(t, h, "refresh-cookie@example.com")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/refresh", nil, cookies, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh from cookie should 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	if cookieNamed(rec.Result().Cookies(), "access_token") == nil {
+		t.Fatal("refresh should set a new access_token cookie")
+	}
+}
+
+func TestBearer_StillWorks(t *testing.T) {
 	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
 	access, _ := loginAs(t, h, "bearer@example.com")
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/todos",
-		map[string]string{"title": "no csrf needed"},
-		nil, map[string]string{"Authorization": "Bearer " + access}))
+		map[string]string{"title": "bearer"}, nil,
+		map[string]string{"Authorization": "Bearer " + access}))
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("bearer request should not need CSRF, got %d %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRefresh_CookieAuthRequiresCSRF(t *testing.T) {
-	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
-	_, cookies := loginAs(t, h, "refresh@example.com")
-	csrfCookie := cookieNamed(cookies, csrf.CookieName)
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/refresh", nil, cookies, nil))
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("refresh with cookies needs CSRF, got %d", rec.Code)
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/refresh", nil, cookies,
-		map[string]string{csrf.HeaderName: csrfCookie.Value}))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("refresh with valid CSRF should 200, got %d %s", rec.Code, rec.Body.String())
-	}
-}
-
-// Public endpoints are not cookie-authenticated, so stale session cookies must
-// not make them demand a CSRF token.
-func TestCSRF_PublicRoutesIgnoreStaleCookies(t *testing.T) {
-	h := NewRouter(newTestDB(t), testCfg(), mailer.Console{}, logger.Discard())
-	_, cookies := loginAs(t, h, "stale@example.com")
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/register",
-		map[string]string{"name": "New", "email": "new@example.com", "password": "Secret123!"},
-		cookies, nil))
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("register with stale cookies should 201, got %d %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/v1/auth/login",
-		map[string]string{"email": "stale@example.com", "password": "Secret123!"}, cookies, nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("login with stale cookies should 200, got %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("bearer create = %d %s", rec.Code, rec.Body.String())
 	}
 }
