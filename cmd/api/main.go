@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"go-api-auth/internal/auth"
+	"go-api-auth/internal/server"
 	"go-api-auth/internal/todos"
 
-	"github.com/go-chi/chi/v5"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -36,18 +36,10 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 
-	r := chi.NewRouter()
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	r.Mount("/", auth.NewRouter(db))
-	r.Mount("/", todos.NewRouter(db))
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	log.Fatal(http.ListenAndServe(":"+port, server.NewRouter(db)))
 }

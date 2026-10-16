@@ -16,8 +16,15 @@ type Handler struct {
 }
 
 func NewRouter(db *gorm.DB) http.Handler {
-	h := &Handler{db: db}
 	r := chi.NewRouter()
+	Register(r, db)
+	return r
+}
+
+// Register mounts the auth routes onto r. It lets the server compose
+// auth and todos onto one root router without two Mount("/") calls.
+func Register(r chi.Router, db *gorm.DB) {
+	h := &Handler{db: db}
 	r.Post("/api/v1/auth/register", h.register)
 	r.Post("/api/v1/auth/login", h.login)
 	r.Post("/api/v1/auth/refresh", h.refresh)
@@ -26,7 +33,6 @@ func NewRouter(db *gorm.DB) http.Handler {
 	r.Post("/api/v1/auth/reset-password", h.resetPassword)
 	r.With(RequireAuth).Get("/api/v1/auth/me", h.me)
 	r.With(RequireAuth).Put("/api/v1/auth/change-password", h.changePassword)
-	return r
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

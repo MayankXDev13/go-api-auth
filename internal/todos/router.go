@@ -19,16 +19,25 @@ type Handler struct {
 }
 
 func NewRouter(db *gorm.DB) http.Handler {
-	h := &Handler{db: db}
 	r := chi.NewRouter()
-	r.Use(auth.RequireAuth)
-	r.Post("/api/v1/todos", h.create)
-	r.Get("/api/v1/todos", h.list)
-	r.Get("/api/v1/todos/{id}", h.get)
-	r.Put("/api/v1/todos/{id}", h.update)
-	r.Delete("/api/v1/todos/{id}", h.remove)
-	r.Patch("/api/v1/todos/{id}/complete", h.complete)
+	Register(r, db)
 	return r
+}
+
+// Register mounts the todo routes onto r. The routes sit in their own
+// Group so RequireAuth applies here without leaking onto auth routes
+// when both are registered on the same root router.
+func Register(r chi.Router, db *gorm.DB) {
+	h := &Handler{db: db}
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireAuth)
+		r.Post("/api/v1/todos", h.create)
+		r.Get("/api/v1/todos", h.list)
+		r.Get("/api/v1/todos/{id}", h.get)
+		r.Put("/api/v1/todos/{id}", h.update)
+		r.Delete("/api/v1/todos/{id}", h.remove)
+		r.Patch("/api/v1/todos/{id}/complete", h.complete)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
