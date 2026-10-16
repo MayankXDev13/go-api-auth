@@ -10,28 +10,44 @@ import (
 	"github.com/google/uuid"
 )
 
-func NewAccessToken(secret []byte, userID uuid.UUID, ttl time.Duration) (string, error) {
+// AccessClaims is the JWT payload for access tokens. TokenVersion lets a
+// user's outstanding tokens be invalidated by bumping the stored version.
+type AccessClaims struct {
+	TokenVersion int `json:"ver"`
+	jwt.RegisteredClaims
+}
+
+func NewAccessToken(secret []byte, userID uuid.UUID, tokenVersion int, ttl time.Duration) (string, error) {
 	now := time.Now()
-	claims := jwt.RegisteredClaims{
-		Subject:   userID.String(),
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+	claims := AccessClaims{
+		TokenVersion: tokenVersion,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID.String(),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
 }
 
-func ParseAccessToken(secret []byte, tok string) (uuid.UUID, error) {
-	parsed, err := jwt.ParseWithClaims(tok, &jwt.RegisteredClaims{}, func(_ *jwt.Token) (any, error) {
+// ParseAccessToken validates the token and returns the user ID and the
+// token version it was issued with.
+func ParseAccessToken(secret []byte, tok string) (uuid.UUID, int, error) {
+	parsed, err := jwt.ParseWithClaims(tok, &AccessClaims{}, func(_ *jwt.Token) (any, error) {
 		return secret, nil
 	})
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, 0, err
 	}
-	claims, ok := parsed.Claims.(*jwt.RegisteredClaims)
+	claims, ok := parsed.Claims.(*AccessClaims)
 	if !ok || !parsed.Valid {
-		return uuid.Nil, jwt.ErrTokenInvalidClaims
+		return uuid.Nil, 0, jwt.ErrTokenInvalidClaims
 	}
-	return uuid.Parse(claims.Subject)
+	id, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		return uuid.Nil, 0, err
+	}
+	return id, claims.TokenVersion, nil
 }
 
 func NewOpaqueToken() (raw, hash string, err error) {

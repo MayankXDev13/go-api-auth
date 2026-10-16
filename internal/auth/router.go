@@ -34,7 +34,7 @@ func NewRouter(db *gorm.DB, cfg config.Config, mail mailer.Mailer) http.Handler 
 // auth and todos onto one root router without two Mount("/") calls.
 func Register(r chi.Router, db *gorm.DB, cfg config.Config, mail mailer.Mailer) {
 	h := &Handler{db: db, cfg: cfg, mail: mail}
-	requireAuth := RequireAuth([]byte(cfg.JWTSecret))
+	requireAuth := RequireAuth(db, []byte(cfg.JWTSecret))
 	r.Post("/api/v1/auth/register", h.register)
 	r.Post("/api/v1/auth/login", h.login)
 	r.Post("/api/v1/auth/refresh", h.refresh)
@@ -43,6 +43,7 @@ func Register(r chi.Router, db *gorm.DB, cfg config.Config, mail mailer.Mailer) 
 	r.Post("/api/v1/auth/reset-password", h.resetPassword)
 	r.With(requireAuth).Get("/api/v1/auth/me", h.me)
 	r.With(requireAuth).Put("/api/v1/auth/change-password", h.changePassword)
+	r.With(requireAuth).Post("/api/v1/auth/logout-all", h.logoutAll)
 }
 
 type registerInput struct {
@@ -116,7 +117,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := NewAccessToken([]byte(h.cfg.JWTSecret), u.ID, h.cfg.AccessTTL)
+	access, err := NewAccessToken([]byte(h.cfg.JWTSecret), u.ID, u.TokenVersion, h.cfg.AccessTTL)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
@@ -182,7 +183,12 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := NewAccessToken([]byte(h.cfg.JWTSecret), rt.UserID, h.cfg.AccessTTL)
+	var u User
+	if err := h.db.Select("id", "token_version").Where("id = ?", rt.UserID).First(&u).Error; err != nil {
+		httpx.Error(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+	access, err := NewAccessToken([]byte(h.cfg.JWTSecret), rt.UserID, u.TokenVersion, h.cfg.AccessTTL)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
@@ -274,7 +280,10 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	if err := h.db.Model(&u).Update("password_hash", string(hash)).Error; err != nil {
+	if err := h.db.Model(&u).Updates(map[string]any{
+		"password_hash": string(hash),
+		"token_version": gorm.Expr("token_version + 1"),
+	}).Error; err != nil {
 		log.Printf("change-password: update: %v", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
@@ -345,7 +354,10 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	err = h.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&User{}).Where("id = ?", prt.UserID).Update("password_hash", string(hash)).Error; err != nil {
+		if err := tx.Model(&User{}).Where("id = ?", prt.UserID).Updates(map[string]any{
+			"password_hash": string(hash),
+			"token_version": gorm.Expr("token_version + 1"),
+		}).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&prt).Update("used_at", now).Error; err != nil {
@@ -360,4 +372,31 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "password reset"})
+}
+
+// logoutAll bumps the user's token version (invalidating all access tokens)
+// and revokes every refresh token.
+func (h *Handler) logoutAll(w http.ResponseWriter, r *http.Request) {
+	id, ok := UserIDFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	now := time.Now()
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&User{}).Where("id = ?", id).
+			Update("token_version", gorm.Expr("token_version + 1")).Error; err != nil {
+			return err
+		}
+		return tx.Model(&RefreshToken{}).
+			Where("user_id = ? AND revoked_at IS NULL", id).
+			Update("revoked_at", now).Error
+	})
+	if err != nil {
+		log.Printf("logout-all: %v", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "logged out everywhere"})
 }

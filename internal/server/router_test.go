@@ -20,6 +20,7 @@ func TestMain(m *testing.M) {
 func testCfg() config.Config {
 	c := config.Default()
 	c.JWTSecret = "test-secret-please-change-32bytes!!"
+	c.BcryptCost = 4
 	return c
 }
 

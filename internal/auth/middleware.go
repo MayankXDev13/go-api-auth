@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 type ctxKey string
@@ -18,8 +19,10 @@ func UserIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 }
 
 // RequireAuth returns middleware that validates a bearer access token signed
-// with secret and stores the caller's user ID on the request context.
-func RequireAuth(secret []byte) func(http.Handler) http.Handler {
+// with secret and stores the caller's user ID on the request context. A token
+// is rejected when its version is older than the user's stored version, which
+// is how logout-all and password changes revoke outstanding access tokens.
+func RequireAuth(db *gorm.DB, secret []byte) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
@@ -27,8 +30,17 @@ func RequireAuth(secret []byte) func(http.Handler) http.Handler {
 				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}
-			id, err := ParseAccessToken(secret, strings.TrimPrefix(h, "Bearer "))
+			id, ver, err := ParseAccessToken(secret, strings.TrimPrefix(h, "Bearer "))
 			if err != nil {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			var u User
+			if err := db.Select("id", "token_version").Where("id = ?", id).First(&u).Error; err != nil {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			if u.TokenVersion != ver {
 				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}

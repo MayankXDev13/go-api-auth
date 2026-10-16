@@ -33,7 +33,7 @@ func NewRouter(db *gorm.DB, cfg config.Config) http.Handler {
 func Register(r chi.Router, db *gorm.DB, cfg config.Config) {
 	h := &Handler{db: db}
 	r.Group(func(r chi.Router) {
-		r.Use(auth.RequireAuth([]byte(cfg.JWTSecret)))
+		r.Use(auth.RequireAuth(db, []byte(cfg.JWTSecret)))
 		r.Post("/api/v1/todos", h.create)
 		r.Get("/api/v1/todos", h.list)
 		r.Get("/api/v1/todos/{id}", h.get)

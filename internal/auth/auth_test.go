@@ -223,6 +223,102 @@ func TestChangePassword(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong current: expected 401, got %d", rec.Code)
 	}
+
+	// The old access token is now stale.
+	rec = doReq(t, r, http.MethodGet, "/api/v1/auth/me", nil, h)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old access token should 401 after change, got %d", rec.Code)
+	}
+}
+
+func TestLogout_KeepsOtherSession(t *testing.T) {
+	db := setupTestDB(t)
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	registerUser(t, r, "Ada", "other@example.com", "Secret123!")
+	access1, refresh1 := loginUser(t, r, "other@example.com", "Secret123!")
+	access2, refresh2 := loginUser(t, r, "other@example.com", "Secret123!")
+
+	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/logout",
+		map[string]string{"refresh_token": refresh1}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Logged-out session's refresh is dead.
+	rec = doReq(t, r, http.MethodPost, "/api/v1/auth/refresh",
+		map[string]string{"refresh_token": refresh1}, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh1 should 401, got %d", rec.Code)
+	}
+
+	// Other session (access and refresh) still works.
+	rec = doReq(t, r, http.MethodGet, "/api/v1/auth/me", nil,
+		map[string]string{"Authorization": "Bearer " + access2})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("access2 should stay valid, got %d", rec.Code)
+	}
+	rec = doReq(t, r, http.MethodPost, "/api/v1/auth/refresh",
+		map[string]string{"refresh_token": refresh2}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh2 should stay valid, got %d", rec.Code)
+	}
+	_ = access1
+}
+
+func TestLogoutAll_RevokesEverything(t *testing.T) {
+	db := setupTestDB(t)
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
+	registerUser(t, r, "Ada", "all@example.com", "Secret123!")
+	access1, refresh1 := loginUser(t, r, "all@example.com", "Secret123!")
+	access2, refresh2 := loginUser(t, r, "all@example.com", "Secret123!")
+
+	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/logout-all", nil,
+		map[string]string{"Authorization": "Bearer " + access1})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout-all: %d %s", rec.Code, rec.Body.String())
+	}
+
+	for _, access := range []string{access1, access2} {
+		rec = doReq(t, r, http.MethodGet, "/api/v1/auth/me", nil,
+			map[string]string{"Authorization": "Bearer " + access})
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("access token should be revoked, got %d", rec.Code)
+		}
+	}
+	for _, refresh := range []string{refresh1, refresh2} {
+		rec = doReq(t, r, http.MethodPost, "/api/v1/auth/refresh",
+			map[string]string{"refresh_token": refresh}, nil)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("refresh token should be revoked, got %d", rec.Code)
+		}
+	}
+}
+
+func TestReset_RevokesAccessTokens(t *testing.T) {
+	db := setupTestDB(t)
+	mail := &recordingMailer{}
+	r := auth.NewRouter(db, testCfg(), mail)
+	registerUser(t, r, "Ada", "rst@example.com", "Secret123!")
+	access, _ := loginUser(t, r, "rst@example.com", "Secret123!")
+
+	doReq(t, r, http.MethodPost, "/api/v1/auth/forgot-password",
+		map[string]string{"email": "rst@example.com"}, nil)
+	if len(mail.msgs) != 1 {
+		t.Fatalf("expected reset email, got %d", len(mail.msgs))
+	}
+	raw := tokenFromBody(t, mail.msgs[0].Body)
+
+	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/reset-password",
+		map[string]string{"token": raw, "new_password": "NewSecret123!"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doReq(t, r, http.MethodGet, "/api/v1/auth/me", nil,
+		map[string]string{"Authorization": "Bearer " + access})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("access token should be revoked after reset, got %d", rec.Code)
+	}
 }
 
 func TestForgotReset_Flow(t *testing.T) {

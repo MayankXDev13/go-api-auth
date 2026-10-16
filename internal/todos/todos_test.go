@@ -23,6 +23,7 @@ func TestMain(m *testing.M) {
 func testCfg() config.Config {
 	c := config.Default()
 	c.JWTSecret = "test-secret-please-change-32bytes!!"
+	c.BcryptCost = 4
 	return c
 }
 
@@ -38,7 +39,7 @@ func makeUser(t *testing.T, db *gorm.DB, name, email string) (string, string) {
 	if err := db.Create(&u).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	access, err := auth.NewAccessToken([]byte(testCfg().JWTSecret), u.ID, testCfg().AccessTTL)
+	access, err := auth.NewAccessToken([]byte(testCfg().JWTSecret), u.ID, u.TokenVersion, testCfg().AccessTTL)
 	if err != nil {
 		t.Fatalf("token: %v", err)
 	}
