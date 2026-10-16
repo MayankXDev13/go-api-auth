@@ -1,0 +1,16 @@
+.git
+.gitignore
+.github
+
+# Local env and data
+.env
+*.db
+app.db
+
+# Docs and issue tracking
+issues
+README.md
+
+# Build output
+/out
+/bin
