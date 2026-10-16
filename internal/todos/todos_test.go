@@ -8,12 +8,19 @@ import (
 	"testing"
 
 	"go-api-auth/internal/auth"
+	"go-api-auth/internal/config"
 	"go-api-auth/internal/todos"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func testCfg() config.Config {
+	c := config.Default()
+	c.JWTSecret = "test-secret-please-change-32bytes!!"
+	return c
+}
 
 func setupDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -42,7 +49,7 @@ func makeUser(t *testing.T, db *gorm.DB, name, email string) (string, string) {
 	if err := db.Create(&u).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	access, err := auth.NewAccessToken(u.ID, auth.AccessTTL())
+	access, err := auth.NewAccessToken([]byte(testCfg().JWTSecret), u.ID, testCfg().AccessTTL)
 	if err != nil {
 		t.Fatalf("token: %v", err)
 	}
@@ -67,7 +74,7 @@ func doReq(t *testing.T, h http.Handler, method, path string, payload any, token
 
 func TestTodo_Unauthorized(t *testing.T) {
 	db := setupDB(t)
-	r := todos.NewRouter(db)
+	r := todos.NewRouter(db, testCfg())
 	rec := doReq(t, r, http.MethodGet, "/api/v1/todos", nil, "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
@@ -76,7 +83,7 @@ func TestTodo_Unauthorized(t *testing.T) {
 
 func TestTodo_CRUD(t *testing.T) {
 	db := setupDB(t)
-	r := todos.NewRouter(db)
+	r := todos.NewRouter(db, testCfg())
 	_, tok := makeUser(t, db, "Ada", "ada@example.com")
 
 	// Create invalid.
@@ -151,7 +158,7 @@ func TestTodo_CRUD(t *testing.T) {
 
 func TestTodo_OwnershipIsolation(t *testing.T) {
 	db := setupDB(t)
-	r := todos.NewRouter(db)
+	r := todos.NewRouter(db, testCfg())
 	_, tokA := makeUser(t, db, "A", "a@example.com")
 	_, tokB := makeUser(t, db, "B", "b@example.com")
 
@@ -191,7 +198,7 @@ func TestTodo_OwnershipIsolation(t *testing.T) {
 
 func TestTodo_CompleteToggle(t *testing.T) {
 	db := setupDB(t)
-	r := todos.NewRouter(db)
+	r := todos.NewRouter(db, testCfg())
 	_, tok := makeUser(t, db, "Ada", "c@example.com")
 
 	rec := doReq(t, r, http.MethodPost, "/api/v1/todos", map[string]string{"title": "task"}, tok)

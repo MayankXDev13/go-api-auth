@@ -60,7 +60,7 @@ func loginUser(t *testing.T, h http.Handler, email, pass string) (access, refres
 
 func TestRegister_Duplicate409(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 	registerUser(t, r, "Ada", "dup@example.com", "Secret123!")
 
 	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/register",
@@ -72,7 +72,7 @@ func TestRegister_Duplicate409(t *testing.T) {
 
 func TestRegister_Invalid400(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 	cases := []map[string]string{
 		{"name": "", "email": "a@example.com", "password": "Secret123!"},
 		{"name": "A", "email": "not-an-email", "password": "Secret123!"},
@@ -88,7 +88,7 @@ func TestRegister_Invalid400(t *testing.T) {
 
 func TestLogin_SuccessAndFailures(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 	registerUser(t, r, "Ada", "login@example.com", "Secret123!")
 
 	access, refresh := loginUser(t, r, "login@example.com", "Secret123!")
@@ -111,7 +111,7 @@ func TestLogin_SuccessAndFailures(t *testing.T) {
 
 func TestMe_Auth(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 	registerUser(t, r, "Ada", "me@example.com", "Secret123!")
 	access, _ := loginUser(t, r, "me@example.com", "Secret123!")
 
@@ -134,7 +134,7 @@ func TestMe_Auth(t *testing.T) {
 
 func TestRefresh_RotatesAndOldDies(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 	registerUser(t, r, "Ada", "ref@example.com", "Secret123!")
 	_, refresh := loginUser(t, r, "ref@example.com", "Secret123!")
 
@@ -165,7 +165,7 @@ func TestRefresh_RotatesAndOldDies(t *testing.T) {
 
 func TestLogout_Revokes(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 	registerUser(t, r, "Ada", "out@example.com", "Secret123!")
 	_, refresh := loginUser(t, r, "out@example.com", "Secret123!")
 
@@ -184,7 +184,7 @@ func TestLogout_Revokes(t *testing.T) {
 
 func TestChangePassword(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 	registerUser(t, r, "Ada", "chg@example.com", "Secret123!")
 	access, _ := loginUser(t, r, "chg@example.com", "Secret123!")
 	h := map[string]string{"Authorization": "Bearer " + access}
@@ -210,7 +210,7 @@ func TestChangePassword(t *testing.T) {
 
 func TestForgotReset_Flow(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 	registerUser(t, r, "Ada", "fp@example.com", "Secret123!")
 
 	// Unknown email still 200 (no enumeration).
@@ -235,7 +235,7 @@ func TestForgotReset_Flow(t *testing.T) {
 	if err := db.Where("email = ?", "fp@example.com").First(&u).Error; err != nil {
 		t.Fatalf("find user: %v", err)
 	}
-	raw, err := auth.IssueResetToken(db, u.ID)
+	raw, err := auth.IssueResetToken(db, u.ID, testCfg().ResetTTL)
 	if err != nil || raw == "" {
 		t.Fatalf("issue token: %v", err)
 	}

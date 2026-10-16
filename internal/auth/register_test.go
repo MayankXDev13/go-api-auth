@@ -8,10 +8,17 @@ import (
 	"testing"
 
 	"go-api-auth/internal/auth"
+	"go-api-auth/internal/config"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func testCfg() config.Config {
+	c := config.Default()
+	c.JWTSecret = "test-secret-please-change-32bytes!!"
+	return c
+}
 
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -39,7 +46,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 // First behavior — valid register returns 201 with public user fields.
 func TestRegister_Returns201(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db)
+	r := auth.NewRouter(db, testCfg())
 
 	payload := map[string]string{
 		"name":     "Ada",

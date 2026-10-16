@@ -4,33 +4,25 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
-func jwtSecret() []byte {
-	if s := os.Getenv("JWT_SECRET"); s != "" {
-		return []byte(s)
-	}
-	return []byte("test-secret-please-change-32bytes!!")
-}
-
-func NewAccessToken(userID uuid.UUID, ttl time.Duration) (string, error) {
+func NewAccessToken(secret []byte, userID uuid.UUID, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := jwt.RegisteredClaims{
 		Subject:   userID.String(),
 		IssuedAt:  jwt.NewNumericDate(now),
 		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret())
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
 }
 
-func ParseAccessToken(tok string) (uuid.UUID, error) {
+func ParseAccessToken(secret []byte, tok string) (uuid.UUID, error) {
 	parsed, err := jwt.ParseWithClaims(tok, &jwt.RegisteredClaims{}, func(_ *jwt.Token) (any, error) {
-		return jwtSecret(), nil
+		return secret, nil
 	})
 	if err != nil {
 		return uuid.Nil, err
@@ -57,7 +49,3 @@ func HashOpaque(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }
-
-func AccessTTL() time.Duration  { return 15 * time.Minute }
-func RefreshTTL() time.Duration { return 7 * 24 * time.Hour }
-func ResetTTL() time.Duration { return 30 * time.Minute }

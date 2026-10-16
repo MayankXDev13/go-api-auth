@@ -55,15 +55,15 @@ func (t *PasswordResetToken) BeforeCreate(_ *gorm.DB) error {
 	return nil
 }
 
-// IssueResetToken clears old unused tokens, stores a new hashed one,
-// and returns the raw token. Used by the handler and by tests.
-func IssueResetToken(db *gorm.DB, userID uuid.UUID) (string, error) {
+// IssueResetToken clears old unused tokens, stores a new hashed one with the
+// given lifetime, and returns the raw token. Used by the handler and by tests.
+func IssueResetToken(db *gorm.DB, userID uuid.UUID, ttl time.Duration) (string, error) {
 	_ = db.Where("user_id = ? AND used_at IS NULL", userID).Delete(&PasswordResetToken{}).Error
 	raw, hash, err := NewOpaqueToken()
 	if err != nil {
 		return "", err
 	}
-	if err := db.Create(&PasswordResetToken{UserID: userID, TokenHash: hash, ExpiresAt: time.Now().Add(ResetTTL())}).Error; err != nil {
+	if err := db.Create(&PasswordResetToken{UserID: userID, TokenHash: hash, ExpiresAt: time.Now().Add(ttl)}).Error; err != nil {
 		return "", err
 	}
 	return raw, nil

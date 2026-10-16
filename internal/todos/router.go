@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go-api-auth/internal/auth"
+	"go-api-auth/internal/config"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -18,19 +19,19 @@ type Handler struct {
 	db *gorm.DB
 }
 
-func NewRouter(db *gorm.DB) http.Handler {
+func NewRouter(db *gorm.DB, cfg config.Config) http.Handler {
 	r := chi.NewRouter()
-	Register(r, db)
+	Register(r, db, cfg)
 	return r
 }
 
 // Register mounts the todo routes onto r. The routes sit in their own
 // Group so RequireAuth applies here without leaking onto auth routes
 // when both are registered on the same root router.
-func Register(r chi.Router, db *gorm.DB) {
+func Register(r chi.Router, db *gorm.DB, cfg config.Config) {
 	h := &Handler{db: db}
 	r.Group(func(r chi.Router) {
-		r.Use(auth.RequireAuth)
+		r.Use(auth.RequireAuth([]byte(cfg.JWTSecret)))
 		r.Post("/api/v1/todos", h.create)
 		r.Get("/api/v1/todos", h.list)
 		r.Get("/api/v1/todos/{id}", h.get)

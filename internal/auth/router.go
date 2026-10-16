@@ -6,33 +6,37 @@ import (
 	"strings"
 	"time"
 
+	"go-api-auth/internal/config"
+
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
 type Handler struct {
-	db *gorm.DB
+	db  *gorm.DB
+	cfg config.Config
 }
 
-func NewRouter(db *gorm.DB) http.Handler {
+func NewRouter(db *gorm.DB, cfg config.Config) http.Handler {
 	r := chi.NewRouter()
-	Register(r, db)
+	Register(r, db, cfg)
 	return r
 }
 
 // Register mounts the auth routes onto r. It lets the server compose
 // auth and todos onto one root router without two Mount("/") calls.
-func Register(r chi.Router, db *gorm.DB) {
-	h := &Handler{db: db}
+func Register(r chi.Router, db *gorm.DB, cfg config.Config) {
+	h := &Handler{db: db, cfg: cfg}
+	requireAuth := RequireAuth([]byte(cfg.JWTSecret))
 	r.Post("/api/v1/auth/register", h.register)
 	r.Post("/api/v1/auth/login", h.login)
 	r.Post("/api/v1/auth/refresh", h.refresh)
 	r.Post("/api/v1/auth/logout", h.logout)
 	r.Post("/api/v1/auth/forgot-password", h.forgotPassword)
 	r.Post("/api/v1/auth/reset-password", h.resetPassword)
-	r.With(RequireAuth).Get("/api/v1/auth/me", h.me)
-	r.With(RequireAuth).Put("/api/v1/auth/change-password", h.changePassword)
+	r.With(requireAuth).Get("/api/v1/auth/me", h.me)
+	r.With(requireAuth).Put("/api/v1/auth/change-password", h.changePassword)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -68,7 +72,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), h.cfg.BcryptCost)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal")
 		return
@@ -111,7 +115,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := NewAccessToken(u.ID, AccessTTL())
+	access, err := NewAccessToken([]byte(h.cfg.JWTSecret), u.ID, h.cfg.AccessTTL)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal")
 		return
@@ -121,7 +125,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	rt := RefreshToken{UserID: u.ID, TokenHash: hash, ExpiresAt: time.Now().Add(RefreshTTL())}
+	rt := RefreshToken{UserID: u.ID, TokenHash: hash, ExpiresAt: time.Now().Add(h.cfg.RefreshTTL)}
 	if err := h.db.Create(&rt).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal")
 		return
@@ -130,7 +134,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: "refresh_token", Value: raw, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		Expires: time.Now().Add(RefreshTTL()),
+		Expires: time.Now().Add(h.cfg.RefreshTTL),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": access, "token_type": "Bearer",
@@ -173,7 +177,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	rt.RevokedAt = &now
 	_ = h.db.Save(&rt).Error
 
-	access, err := NewAccessToken(rt.UserID, AccessTTL())
+	access, err := NewAccessToken([]byte(h.cfg.JWTSecret), rt.UserID, h.cfg.AccessTTL)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal")
 		return
@@ -183,14 +187,14 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	if err := h.db.Create(&RefreshToken{UserID: rt.UserID, TokenHash: newHash, ExpiresAt: time.Now().Add(RefreshTTL())}).Error; err != nil {
+	if err := h.db.Create(&RefreshToken{UserID: rt.UserID, TokenHash: newHash, ExpiresAt: time.Now().Add(h.cfg.RefreshTTL)}).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: "refresh_token", Value: newRaw, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		Expires: time.Now().Add(RefreshTTL()),
+		Expires: time.Now().Add(h.cfg.RefreshTTL),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": access, "token_type": "Bearer", "refresh_token": newRaw,
@@ -254,7 +258,7 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "current password incorrect")
 		return
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+	hash, _ := bcrypt.GenerateFromPassword([]byte(in.NewPassword), h.cfg.BcryptCost)
 	_ = h.db.Model(&u).Update("password_hash", string(hash)).Error
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password changed"})
 }
@@ -273,7 +277,7 @@ func (h *Handler) forgotPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
 		return
 	}
-	raw, err := IssueResetToken(h.db, u.ID)
+	raw, err := IssueResetToken(h.db, u.ID, h.cfg.ResetTTL)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
 		return
@@ -306,7 +310,7 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid or expired token")
 		return
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+	hash, _ := bcrypt.GenerateFromPassword([]byte(in.NewPassword), h.cfg.BcryptCost)
 	_ = h.db.Model(&User{}).Where("id = ?", prt.UserID).Update("password_hash", string(hash)).Error
 	now := time.Now()
 	_ = h.db.Model(&prt).Update("used_at", now).Error

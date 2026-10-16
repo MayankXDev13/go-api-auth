@@ -3,10 +3,10 @@ package main
 import (
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
 	"go-api-auth/internal/auth"
+	"go-api-auth/internal/config"
 	"go-api-auth/internal/server"
 	"go-api-auth/internal/todos"
 
@@ -15,9 +15,9 @@ import (
 	"gorm.io/gorm"
 )
 
-func openDB() *gorm.DB {
-	if url := os.Getenv("DATABASE_URL"); strings.HasPrefix(url, "postgres") {
-		db, err := gorm.Open(postgres.Open(url), &gorm.Config{})
+func openDB(cfg config.Config) *gorm.DB {
+	if strings.HasPrefix(cfg.DatabaseURL, "postgres") {
+		db, err := gorm.Open(postgres.Open(cfg.DatabaseURL), &gorm.Config{})
 		if err != nil {
 			log.Fatalf("open postgres: %v", err)
 		}
@@ -31,15 +31,16 @@ func openDB() *gorm.DB {
 }
 
 func main() {
-	db := openDB()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
+	db := openDB(cfg)
 	if err := db.AutoMigrate(&auth.User{}, &auth.RefreshToken{}, &auth.PasswordResetToken{}, &todos.Todo{}); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	log.Printf("listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, server.NewRouter(db)))
+	log.Printf("listening on :%s", cfg.Port)
+	log.Fatal(http.ListenAndServe(":"+cfg.Port, server.NewRouter(db, cfg)))
 }
