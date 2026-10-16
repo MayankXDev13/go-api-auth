@@ -1,0 +1,744 @@
+openapi: 3.0.3
+info:
+  title: go-api-auth
+  description: |
+    Todo API with authentication. Access tokens are HS256 JWTs sent as
+    `Authorization: Bearer <token>`. Refresh tokens are opaque and returned in
+    the body and as an `HttpOnly` cookie named `refresh_token`.
+
+    Auth endpoints are rate limited per IP (and per email when the body
+    contains one). A limited request gets `429` with a `Retry-After` header.
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8080
+    description: Local development
+security: []
+tags:
+  - name: Health
+    description: Liveness.
+  - name: Auth
+    description: Registration, login, tokens and passwords.
+  - name: Todos
+    description: The current user's todos.
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      operationId: healthz
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: email already exists
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with email and password
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Logged in. Also sets the `refresh_token` cookie.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: HttpOnly refresh token cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid credentials
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a refresh token for a new pair
+      description: |
+        The refresh token is read from the JSON body or, if absent, from the
+        `refresh_token` cookie. The old token is rotated out. Presenting an
+        already-rotated token revokes the entire token family.
+      operationId: refresh
+      security:
+        - cookieAuth: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: New access and refresh tokens. Also sets the cookie.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshResponse"
+        "401":
+          description: Missing, invalid, expired or replayed refresh token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid refresh token
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke one refresh token
+      description: Reads the refresh token from the JSON body or cookie.
+      operationId: logout
+      security:
+        - cookieAuth: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: Refresh token revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              example:
+                status: logged out
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request a password-reset email
+      description: |
+        Always returns `200`, whether or not the email exists, to avoid user
+        enumeration.
+      operationId: forgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgotPasswordRequest"
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              example:
+                status: if that email exists, a reset link was sent
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/v1/auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Reset a password with a reset token
+      description: The token is single use. A successful reset revokes all sessions.
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          description: Password reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              example:
+                status: password reset
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current user
+      operationId: me
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/change-password:
+    put:
+      tags: [Auth]
+      summary: Change the current user's password
+      description: Bumps the token version, so existing access tokens stop working.
+      operationId: changePassword
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "200":
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              example:
+                status: password changed
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Revoke every session for the current user
+      description: Bumps the token version and revokes all refresh tokens.
+      operationId: logoutAll
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Logged out everywhere
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              example:
+                status: logged out everywhere
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/todos:
+    post:
+      tags: [Todos]
+      summary: Create a todo
+      operationId: createTodo
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TodoCreate"
+      responses:
+        "201":
+          description: Todo created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Todo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Todos]
+      summary: List the current user's todos
+      operationId: listTodos
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: completed
+          in: query
+          description: Filter by completion state
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          description: Case-insensitive match on title or description
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Page size, capped at 100
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: A page of todos, newest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TodoList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/todos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TodoID"
+    get:
+      tags: [Todos]
+      summary: Get one todo
+      operationId: getTodo
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The todo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Todo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Todos]
+      summary: Update a todo
+      operationId: updateTodo
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TodoUpdate"
+      responses:
+        "200":
+          description: The updated todo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Todo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Todos]
+      summary: Delete a todo
+      operationId: deleteTodo
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/todos/{id}/complete:
+    parameters:
+      - $ref: "#/components/parameters/TodoID"
+    patch:
+      tags: [Todos]
+      summary: Mark a todo complete
+      operationId: completeTodo
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The completed todo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Todo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token from login or refresh.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+      description: HttpOnly refresh token cookie set by login and refresh.
+
+  parameters:
+    TodoID:
+      name: id
+      in: path
+      required: true
+      description: Todo ID (UUID). Unknown or non-UUID IDs return 404.
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid access token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: unauthorized
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: not found
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: too many requests
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: internal
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    StatusResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          example: Ada Lovelace
+        email:
+          type: string
+          format: email
+          example: ada@example.com
+        password:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: At least 8 characters, at most 72 bytes.
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          description: Optional when the `refresh_token` cookie is sent.
+
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+
+    ResetPasswordRequest:
+      type: object
+      required: [token, new_password]
+      properties:
+        token:
+          type: string
+          description: Raw token from the reset email.
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 72
+
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          type: string
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 72
+
+    AuthUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        created_at:
+          type: string
+          format: date-time
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: Bearer
+        refresh_token:
+          type: string
+        user:
+          $ref: "#/components/schemas/AuthUser"
+
+    RefreshResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: Bearer
+        refresh_token:
+          type: string
+
+    Todo:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1000
+        completed:
+          type: boolean
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TodoCreate:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1000
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
+
+    TodoUpdate:
+      type: object
+      description: Only the fields present are changed.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1000
+        completed:
+          type: boolean
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
+
+    TodoList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Todo"
+        meta:
+          type: object
+          required: [page, limit, total]
+          properties:
+            page:
+              type: integer
+              minimum: 1
+            limit:
+              type: integer
+              minimum: 1
+              maximum: 100
+            total:
+              type: integer
+              minimum: 0

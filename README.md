@@ -101,6 +101,10 @@ Listing defaults to 20 per page and caps at 100. Todos belong to their owner; re
 
 `go test ./...` needs a reachable Postgres. Set `TEST_DATABASE_URL`, or let it fall back to `DATABASE_URL`. Each test package creates its own database, runs the real migrations, truncates between tests, and drops the database when the package finishes, so packages run in parallel safely.
 
+## API spec
+
+`openapi.yaml` holds an OpenAPI 3.0 description of every route, including request bodies, response shapes, and the auth schemes. Point Swagger UI, Postman, or `openapi-generator` at it.
+
 ## Known gaps
 
 - The rate limiter keeps counters in memory, so it is per-process. A multi-instance deploy would need a shared store.
