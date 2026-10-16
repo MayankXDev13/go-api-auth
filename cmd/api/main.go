@@ -6,6 +6,7 @@ import (
 
 	"go-api-auth/internal/config"
 	"go-api-auth/internal/database"
+	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/server"
 )
 
@@ -21,5 +22,5 @@ func main() {
 	}
 
 	log.Printf("listening on :%s", cfg.Port)
-	log.Fatal(http.ListenAndServe(":"+cfg.Port, server.NewRouter(db, cfg)))
+	log.Fatal(http.ListenAndServe(":"+cfg.Port, server.NewRouter(db, cfg, mailer.New(cfg))))
 }

@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"go-api-auth/internal/config"
 	"go-api-auth/internal/httpx"
+	"go-api-auth/internal/mailer"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -17,20 +19,21 @@ import (
 )
 
 type Handler struct {
-	db  *gorm.DB
-	cfg config.Config
+	db   *gorm.DB
+	cfg  config.Config
+	mail mailer.Mailer
 }
 
-func NewRouter(db *gorm.DB, cfg config.Config) http.Handler {
+func NewRouter(db *gorm.DB, cfg config.Config, mail mailer.Mailer) http.Handler {
 	r := chi.NewRouter()
-	Register(r, db, cfg)
+	Register(r, db, cfg, mail)
 	return r
 }
 
 // Register mounts the auth routes onto r. It lets the server compose
 // auth and todos onto one root router without two Mount("/") calls.
-func Register(r chi.Router, db *gorm.DB, cfg config.Config) {
-	h := &Handler{db: db, cfg: cfg}
+func Register(r chi.Router, db *gorm.DB, cfg config.Config, mail mailer.Mailer) {
+	h := &Handler{db: db, cfg: cfg, mail: mail}
 	requireAuth := RequireAuth([]byte(cfg.JWTSecret))
 	r.Post("/api/v1/auth/register", h.register)
 	r.Post("/api/v1/auth/login", h.login)
@@ -295,10 +298,18 @@ func (h *Handler) forgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := IssueResetToken(h.db, u.ID, h.cfg.ResetTTL)
 	if err != nil {
+		log.Printf("forgot-password: issue token: %v", err)
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
 		return
 	}
-	_ = raw // in prod, email raw token link here via mailer
+	link := fmt.Sprintf("%s/reset-password?token=%s", strings.TrimRight(h.cfg.PublicBaseURL, "/"), raw)
+	if err := h.mail.Send(r.Context(), mailer.Message{
+		To:      u.Email,
+		Subject: "Reset your password",
+		Body:    "Use the link below to reset your password:\n\n" + link,
+	}); err != nil {
+		log.Printf("forgot-password: send mail: %v", err)
+	}
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "if that email exists, a reset link was sent"})
 }
 

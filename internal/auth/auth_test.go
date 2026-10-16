@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"go-api-auth/internal/auth"
@@ -60,7 +61,7 @@ func loginUser(t *testing.T, h http.Handler, email, pass string) (access, refres
 
 func TestRegister_Duplicate409(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 	registerUser(t, r, "Ada", "dup@example.com", "Secret123!")
 
 	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/register",
@@ -72,7 +73,7 @@ func TestRegister_Duplicate409(t *testing.T) {
 
 func TestRegister_Invalid400(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 	cases := []map[string]string{
 		{"name": "", "email": "a@example.com", "password": "Secret123!"},
 		{"name": "A", "email": "not-an-email", "password": "Secret123!"},
@@ -88,7 +89,7 @@ func TestRegister_Invalid400(t *testing.T) {
 
 func TestRegister_DBError500(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 	sqlDB, err := db.DB()
 	if err != nil {
 		t.Fatalf("db handle: %v", err)
@@ -104,7 +105,7 @@ func TestRegister_DBError500(t *testing.T) {
 
 func TestLogin_SuccessAndFailures(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 	registerUser(t, r, "Ada", "login@example.com", "Secret123!")
 
 	access, refresh := loginUser(t, r, "login@example.com", "Secret123!")
@@ -127,7 +128,7 @@ func TestLogin_SuccessAndFailures(t *testing.T) {
 
 func TestMe_Auth(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 	registerUser(t, r, "Ada", "me@example.com", "Secret123!")
 	access, _ := loginUser(t, r, "me@example.com", "Secret123!")
 
@@ -150,7 +151,7 @@ func TestMe_Auth(t *testing.T) {
 
 func TestRefresh_RotatesAndOldDies(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 	registerUser(t, r, "Ada", "ref@example.com", "Secret123!")
 	_, refresh := loginUser(t, r, "ref@example.com", "Secret123!")
 
@@ -181,7 +182,7 @@ func TestRefresh_RotatesAndOldDies(t *testing.T) {
 
 func TestLogout_Revokes(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 	registerUser(t, r, "Ada", "out@example.com", "Secret123!")
 	_, refresh := loginUser(t, r, "out@example.com", "Secret123!")
 
@@ -200,7 +201,7 @@ func TestLogout_Revokes(t *testing.T) {
 
 func TestChangePassword(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 	registerUser(t, r, "Ada", "chg@example.com", "Secret123!")
 	access, _ := loginUser(t, r, "chg@example.com", "Secret123!")
 	h := map[string]string{"Authorization": "Bearer " + access}
@@ -226,14 +227,18 @@ func TestChangePassword(t *testing.T) {
 
 func TestForgotReset_Flow(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	mail := &recordingMailer{}
+	r := auth.NewRouter(db, testCfg(), mail)
 	registerUser(t, r, "Ada", "fp@example.com", "Secret123!")
 
-	// Unknown email still 200 (no enumeration).
+	// Unknown email still 200 (no enumeration) and sends nothing.
 	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/forgot-password",
 		map[string]string{"email": "ghost@example.com"}, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unknown forgot should 200, got %d", rec.Code)
+	}
+	if len(mail.msgs) != 0 {
+		t.Fatalf("expected no mail for unknown email, got %d", len(mail.msgs))
 	}
 
 	rec = doReq(t, r, http.MethodPost, "/api/v1/auth/forgot-password",
@@ -246,14 +251,15 @@ func TestForgotReset_Flow(t *testing.T) {
 	if count == 0 {
 		t.Fatal("expected a reset row in db")
 	}
-
-	var u auth.User
-	if err := db.Where("email = ?", "fp@example.com").First(&u).Error; err != nil {
-		t.Fatalf("find user: %v", err)
+	if len(mail.msgs) != 1 {
+		t.Fatalf("expected 1 reset email, got %d", len(mail.msgs))
 	}
-	raw, err := auth.IssueResetToken(db, u.ID, testCfg().ResetTTL)
-	if err != nil || raw == "" {
-		t.Fatalf("issue token: %v", err)
+	if mail.msgs[0].To != "fp@example.com" {
+		t.Fatalf("wrong recipient %q", mail.msgs[0].To)
+	}
+	raw := tokenFromBody(t, mail.msgs[0].Body)
+	if raw == "" {
+		t.Fatal("expected a reset token in the email body")
 	}
 
 	rec = doReq(t, r, http.MethodPost, "/api/v1/auth/reset-password",
@@ -288,4 +294,18 @@ func TestForgotReset_Flow(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("reuse should 400, got %d", rec.Code)
 	}
+}
+
+func tokenFromBody(t *testing.T, body string) string {
+	t.Helper()
+	const marker = "token="
+	i := strings.Index(body, marker)
+	if i < 0 {
+		return ""
+	}
+	tok := body[i+len(marker):]
+	if j := strings.IndexAny(tok, "\r\n \t\""); j >= 0 {
+		tok = tok[:j]
+	}
+	return tok
 }

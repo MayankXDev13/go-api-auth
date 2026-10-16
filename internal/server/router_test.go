@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/testutil"
 
 	"gorm.io/gorm"
@@ -28,7 +29,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 }
 
 func TestHealthz(t *testing.T) {
-	r := NewRouter(newTestDB(t), testCfg())
+	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{})
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -51,7 +52,7 @@ func TestHealthz(t *testing.T) {
 // The whole point of the fix: auth and todos live on one root router
 // without a Mount("/") panic, and both are reachable.
 func TestComposedRouter_ReachesAuthAndTodos(t *testing.T) {
-	r := NewRouter(newTestDB(t), testCfg())
+	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{})
 
 	// Auth is public: an empty body is a 400 from the handler, not a
 	// 404 (route missing) and not a 401 (todos RequireAuth leaked onto it).
@@ -72,7 +73,7 @@ func TestComposedRouter_ReachesAuthAndTodos(t *testing.T) {
 // Auth's own protected routes still require a bearer token on the
 // composed router, and a tokenless request must not fall through to todos.
 func TestComposedRouter_AuthProtectedRoutes(t *testing.T) {
-	r := NewRouter(newTestDB(t), testCfg())
+	r := NewRouter(newTestDB(t), testCfg(), mailer.Console{})
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil))

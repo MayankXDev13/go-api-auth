@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,10 +10,20 @@ import (
 
 	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/mailer"
 	"go-api-auth/internal/testutil"
 
 	"gorm.io/gorm"
 )
+
+type recordingMailer struct {
+	msgs []mailer.Message
+}
+
+func (m *recordingMailer) Send(_ context.Context, msg mailer.Message) error {
+	m.msgs = append(m.msgs, msg)
+	return nil
+}
 
 func TestMain(m *testing.M) {
 	testutil.Main(m)
@@ -32,7 +43,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 // First behavior — valid register returns 201 with public user fields.
 func TestRegister_Returns201(t *testing.T) {
 	db := setupTestDB(t)
-	r := auth.NewRouter(db, testCfg())
+	r := auth.NewRouter(db, testCfg(), &recordingMailer{})
 
 	payload := map[string]string{
 		"name":     "Ada",
