@@ -17,13 +17,13 @@ import (
 
 func openDB(cfg config.Config) *gorm.DB {
 	if strings.HasPrefix(cfg.DatabaseURL, "postgres") {
-		db, err := gorm.Open(postgres.Open(cfg.DatabaseURL), &gorm.Config{})
+		db, err := gorm.Open(postgres.Open(cfg.DatabaseURL), &gorm.Config{TranslateError: true})
 		if err != nil {
 			log.Fatalf("open postgres: %v", err)
 		}
 		return db
 	}
-	db, err := gorm.Open(sqlite.Open("app.db"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("app.db"), &gorm.Config{TranslateError: true})
 	if err != nil {
 		log.Fatalf("open sqlite: %v", err)
 	}

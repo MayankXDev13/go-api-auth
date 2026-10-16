@@ -25,7 +25,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	// TDD loop uses sqlite in-memory for speed (no Docker here).
 	// Prod uses Postgres via same *gorm.DB / Store interface —
 	// models are PG-compatible (uuid, citext handled in PG migration).
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{TranslateError: true})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

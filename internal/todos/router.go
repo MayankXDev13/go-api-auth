@@ -2,6 +2,7 @@ package todos
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"go-api-auth/internal/auth"
 	"go-api-auth/internal/config"
+	"go-api-auth/internal/httpx"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -41,16 +43,6 @@ func Register(r chi.Router, db *gorm.DB, cfg config.Config) {
 	})
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
-}
-
 func uid(r *http.Request) (uuid.UUID, bool) {
 	return auth.UserIDFromContext(r.Context())
 }
@@ -72,31 +64,32 @@ type createInput struct {
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	userID, ok := uid(r)
 	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	var in createInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	in.Title = strings.TrimSpace(in.Title)
 	if in.Title == "" || len(in.Title) > 255 {
-		writeErr(w, http.StatusBadRequest, "title required, max 255 chars")
+		httpx.Error(w, http.StatusBadRequest, "title required, max 255 chars")
 		return
 	}
 	t := Todo{UserID: userID, Title: in.Title, Description: strings.TrimSpace(in.Description), DueDate: in.DueDate}
 	if err := h.db.Create(&t).Error; err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal")
+		log.Printf("todos create: %v", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	writeJSON(w, http.StatusCreated, t)
+	httpx.JSON(w, http.StatusCreated, t)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	userID, ok := uid(r)
 	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	q := h.db.Where("user_id = ?", userID).Model(&Todo{})
@@ -104,7 +97,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if c := r.URL.Query().Get("completed"); c != "" {
 		b, err := strconv.ParseBool(c)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, "completed must be true/false")
+			httpx.Error(w, http.StatusBadRequest, "completed must be true/false")
 			return
 		}
 		q = q.Where("completed = ?", b)
@@ -131,7 +124,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []Todo{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.JSON(w, http.StatusOK, map[string]any{
 		"data": items,
 		"meta": map[string]any{"page": page, "limit": limit, "total": total},
 	})
@@ -140,20 +133,20 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	userID, ok := uid(r)
 	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	id, valid := parseID(chi.URLParam(r, "id"))
 	if !valid {
-		writeErr(w, http.StatusNotFound, "not found")
+		httpx.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	var t Todo
 	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&t).Error; err != nil {
-		writeErr(w, http.StatusNotFound, "not found")
+		httpx.Error(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	httpx.JSON(w, http.StatusOK, t)
 }
 
 type updateInput struct {
@@ -166,28 +159,28 @@ type updateInput struct {
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	userID, ok := uid(r)
 	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	id, valid := parseID(chi.URLParam(r, "id"))
 	if !valid {
-		writeErr(w, http.StatusNotFound, "not found")
+		httpx.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	var t Todo
 	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&t).Error; err != nil {
-		writeErr(w, http.StatusNotFound, "not found")
+		httpx.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	var in updateInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if in.Title != nil {
 		title := strings.TrimSpace(*in.Title)
 		if title == "" || len(title) > 255 {
-			writeErr(w, http.StatusBadRequest, "title required, max 255 chars")
+			httpx.Error(w, http.StatusBadRequest, "title required, max 255 chars")
 			return
 		}
 		t.Title = title
@@ -201,24 +194,33 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if in.DueDate != nil {
 		t.DueDate = in.DueDate
 	}
-	_ = h.db.Save(&t).Error
-	writeJSON(w, http.StatusOK, t)
+	if err := h.db.Save(&t).Error; err != nil {
+		log.Printf("todos update: %v", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, t)
 }
 
 func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 	userID, ok := uid(r)
 	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	id, valid := parseID(chi.URLParam(r, "id"))
 	if !valid {
-		writeErr(w, http.StatusNotFound, "not found")
+		httpx.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	res := h.db.Where("id = ? AND user_id = ?", id, userID).Delete(&Todo{})
+	if res.Error != nil {
+		log.Printf("todos delete: %v", res.Error)
+		httpx.Error(w, http.StatusInternalServerError, "internal")
+		return
+	}
 	if res.RowsAffected == 0 {
-		writeErr(w, http.StatusNotFound, "not found")
+		httpx.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -227,20 +229,24 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	userID, ok := uid(r)
 	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	id, valid := parseID(chi.URLParam(r, "id"))
 	if !valid {
-		writeErr(w, http.StatusNotFound, "not found")
+		httpx.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	var t Todo
 	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&t).Error; err != nil {
-		writeErr(w, http.StatusNotFound, "not found")
+		httpx.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	t.Completed = true
-	_ = h.db.Save(&t).Error
-	writeJSON(w, http.StatusOK, t)
+	if err := h.db.Save(&t).Error; err != nil {
+		log.Printf("todos complete: %v", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, t)
 }

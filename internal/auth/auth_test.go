@@ -86,6 +86,22 @@ func TestRegister_Invalid400(t *testing.T) {
 	}
 }
 
+func TestRegister_DBError500(t *testing.T) {
+	db := setupTestDB(t)
+	r := auth.NewRouter(db, testCfg())
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	_ = sqlDB.Close()
+
+	rec := doReq(t, r, http.MethodPost, "/api/v1/auth/register",
+		map[string]string{"name": "Ada", "email": "err@example.com", "password": "Secret123!"}, nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on db failure, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestLogin_SuccessAndFailures(t *testing.T) {
 	db := setupTestDB(t)
 	r := auth.NewRouter(db, testCfg())
