@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"go-api-auth/internal/database"
 
+	"github.com/joho/godotenv"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -59,7 +61,12 @@ func Main(m *testing.M) {
 }
 
 func setup() {
+	loadDotEnv()
+
 	adminDSN = os.Getenv("TEST_DATABASE_URL")
+	if adminDSN == "" {
+		adminDSN = os.Getenv("DATABASE_URL")
+	}
 	if adminDSN == "" {
 		adminDSN = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
 	}
@@ -100,4 +107,25 @@ func drop() {
 		return
 	}
 	_ = admin.Exec("DROP DATABASE IF EXISTS " + createdDB + " WITH (FORCE)").Error
+}
+
+// loadDotEnv finds the nearest .env walking up from the working directory,
+// so tests run from a package directory still pick up the repo-root .env.
+func loadDotEnv() {
+	dir, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	for {
+		p := filepath.Join(dir, ".env")
+		if _, err := os.Stat(p); err == nil {
+			_ = godotenv.Load(p)
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return
+		}
+		dir = parent
+	}
 }

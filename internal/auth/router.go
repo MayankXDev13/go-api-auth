@@ -12,6 +12,7 @@ import (
 	"go-api-auth/internal/config"
 	"go-api-auth/internal/httpx"
 	"go-api-auth/internal/mailer"
+	"go-api-auth/internal/ratelimit"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -36,15 +37,21 @@ func NewRouter(db *gorm.DB, cfg config.Config, mail mailer.Mailer) http.Handler 
 func Register(r chi.Router, db *gorm.DB, cfg config.Config, mail mailer.Mailer) {
 	h := &Handler{db: db, cfg: cfg, mail: mail}
 	requireAuth := RequireAuth(db, []byte(cfg.JWTSecret))
-	r.Post("/api/v1/auth/register", h.register)
-	r.Post("/api/v1/auth/login", h.login)
-	r.Post("/api/v1/auth/refresh", h.refresh)
-	r.Post("/api/v1/auth/logout", h.logout)
-	r.Post("/api/v1/auth/forgot-password", h.forgotPassword)
-	r.Post("/api/v1/auth/reset-password", h.resetPassword)
-	r.With(requireAuth).Get("/api/v1/auth/me", h.me)
-	r.With(requireAuth).Put("/api/v1/auth/change-password", h.changePassword)
-	r.With(requireAuth).Post("/api/v1/auth/logout-all", h.logoutAll)
+
+	r.Group(func(r chi.Router) {
+		if cfg.RateLimitPerMin > 0 {
+			r.Use(ratelimit.Middleware(ratelimit.NewMemory(cfg.RateLimitPerMin)))
+		}
+		r.Post("/api/v1/auth/register", h.register)
+		r.Post("/api/v1/auth/login", h.login)
+		r.Post("/api/v1/auth/refresh", h.refresh)
+		r.Post("/api/v1/auth/logout", h.logout)
+		r.Post("/api/v1/auth/forgot-password", h.forgotPassword)
+		r.Post("/api/v1/auth/reset-password", h.resetPassword)
+		r.With(requireAuth).Get("/api/v1/auth/me", h.me)
+		r.With(requireAuth).Put("/api/v1/auth/change-password", h.changePassword)
+		r.With(requireAuth).Post("/api/v1/auth/logout-all", h.logoutAll)
+	})
 }
 
 type registerInput struct {

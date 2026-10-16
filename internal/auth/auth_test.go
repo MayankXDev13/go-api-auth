@@ -355,6 +355,25 @@ func TestReset_RevokesAccessTokens(t *testing.T) {
 	}
 }
 
+func TestRateLimit_Returns429(t *testing.T) {
+	db := setupTestDB(t)
+	cfg := testCfg()
+	cfg.RateLimitPerMin = 3
+	r := auth.NewRouter(db, cfg, &recordingMailer{})
+
+	var last *httptest.ResponseRecorder
+	for i := 0; i < 4; i++ {
+		last = doReq(t, r, http.MethodPost, "/api/v1/auth/login",
+			map[string]string{"email": "flood@example.com", "password": "nope"}, nil)
+	}
+	if last.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after limit, got %d %s", last.Code, last.Body.String())
+	}
+	if last.Header().Get("Retry-After") == "" {
+		t.Fatal("expected a Retry-After header")
+	}
+}
+
 func TestForgotReset_Flow(t *testing.T) {
 	db := setupTestDB(t)
 	mail := &recordingMailer{}
